@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node tests/scheduling.mjs && node tests/abilities.mjs",
+    "test:gpu-native": "node tests/cc-native.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },

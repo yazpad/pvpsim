@@ -197,7 +197,7 @@ async function run() {
       if (fixture.name.startsWith('Polymorph')) {
         const b = ARENA_HEADER_WORDS + ENTITY_WORDS;
         assert(live[b + 34] > 0 && live[b + 23] === 0, 'Polymorph did not use independent DR');
-        assert(floats[b + 4] > 20000, 'Polymorph regeneration missing');
+        assert(floats[b + 4] === floats[b + 5], 'Polymorph did not restore full health');
       }
       if (fixture.name.startsWith('Ice Barrier')) {
         const a = ARENA_HEADER_WORDS + ENTITY_BASE_WORDS;

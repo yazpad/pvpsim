@@ -124,6 +124,9 @@ Evidence: `src/main.ts` (unit frame and arena rendering, log export, playback); 
 - [ ] DEFERRED by user (2026-10-30): Verify browser execution of the current shader and real match behavior. Native compilation does not establish browser runtime correctness.
 
 ### Battle-log follow-up (2026-10-30)
+- [x] Fix Polymorph damage breaks leaving stale heals active: invalidate the pending tick, including at the exact healing timestamp, and never extend expired Polymorph slots on damage.
+- [x] Fix early Polymorph/Fear breaks leaving decisions postponed until the old CC end. Retiming reuses the existing heap event, respects remaining CC/cast/GCD and pre-CC cadence, and does not duplicate or grant early turns. Native software Vulkan checks pass for 24 live/prediction scenarios; browser checks remain deferred.
+- [x] Temporary user-requested Polymorph tuning: fill the target to maximum HP on each one-second healing tick, including through healing reduction. Revisit exact Forever healing later.
 - Archived: the failed-dash freeze fix passed native mechanics tests, but log(7) still showed retreating; the entire expansion has now been rolled back.
 - [ ] Research the failed Warrior experiment using logs (6)/(7) and the archived implementation; keep budget changes separate.
 - [x] Add animated Drain Life channel beam driven by cast/aura state; stop on cancellation, expiry or death.

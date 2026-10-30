@@ -109,7 +109,7 @@ struct Event {
     source_id: u32,
     target_id: u32,
     spell_id: u32,
-    generation: u32,
+    generation: u32, // periodic aura token; for decisions, pre-CC due time (0 = not CC-delayed)
 };
 
 struct SimQueue {
@@ -437,10 +437,21 @@ fn apply_cc(recipient: ptr<function, EntityState>, cc_type: u32, base_duration_m
 }
 
 // Break active Fear (stun_end when dr_stun_count > 0) or Root (aura_type == 6) when direct/periodic damage exceeds threshold
-fn break_cc_on_damage(recipient: ptr<function, EntityState>, dmg: f32, now: u32) {
-    if (dmg <= 0.0) { return; }
+// Return whether incapacitation was shortened, so its existing decision event
+// can be moved forward after all damage/CC effects from this hit have resolved.
+fn break_cc_on_damage(recipient: ptr<function, EntityState>, dmg: f32, now: u32) -> bool {
+    if (dmg <= 0.0) { return false; }
+    var shortened = false;
     for (var i = 0u; i < 8u; i++) {
-        if (((*recipient).auras[i].aura_type & 0xFFu) == 8u) { (*recipient).auras[i].expires_at = now; }
+        if (((*recipient).auras[i].aura_type & 0xFFu) == 8u) {
+            if ((*recipient).auras[i].expires_at > now) {
+                (*recipient).auras[i].expires_at = now;
+                shortened = true;
+            }
+            // Invalidate pending heals even at the exact break/expiry timestamp.
+            // Never extend an already-expired aura to the current damage time.
+            (*recipient).auras[i].next_tick_at = 0u;
+        }
     }
     // Break Root (aura_type 6) if a single hit deals >= 150 damage, or accumulate against value
     for (var i = 0u; i < 8u; i = i + 1u) {
@@ -457,7 +468,9 @@ fn break_cc_on_damage(recipient: ptr<function, EntityState>, dmg: f32, now: u32)
     // Break incapacitate/Fear early if single hit >= 280 damage
     if ((*recipient).incapacitate_type == 4u && (*recipient).stun_end > now && dmg >= 280.0) {
         (*recipient).stun_end = now;
+        shortened = true;
     }
+    return shortened;
 }
 
 fn incapacitated_until(unit: EntityState) -> u32 {
@@ -550,6 +563,34 @@ fn enqueue(q: ptr<function, SimQueue>, ev: Event) {
         i = parent;
     }
     (*q).events[i] = ev;
+}
+
+// Decrease the timestamp of the existing decision, without adding a second turn
+// or expanding the queue. Only called when damage actually shortens CC.
+fn resume_decision_after_cc_break(q: ptr<function, SimQueue>, unit: EntityState, now: u32) {
+    if (unit.alive == 0u || unit.hp <= 0.0) { return; }
+    let busy_end = max(max(unit.gcd_end, unit.cast_end), incapacitated_until(unit));
+    let ready_at = max(now, busy_end) + 50u;
+    for (var slot = 0u; slot < (*q).size; slot++) {
+        var ev = (*q).events[slot];
+        if (ev.kind != 5u || ev.source_id != unit.id) { continue; }
+        // A normal pending turn must not be accelerated just because CC was
+        // applied and broken before that turn. Preserve its original cadence.
+        if (ev.generation == 0u) { return; }
+        let due = max(ready_at, ev.generation);
+        if (ev.at <= due) { return; }
+        ev.at = due;
+        var i = slot;
+        for (var step = 0u; step < 6u; step++) {
+            if (i == 0u) { break; }
+            let parent = (i - 1u) / 2u;
+            if (!heap_before(ev, (*q).events[parent])) { break; }
+            (*q).events[i] = (*q).events[parent];
+            i = parent;
+        }
+        (*q).events[i] = ev;
+        return;
+    }
 }
 
 fn dequeue(q: ptr<function, SimQueue>) -> Event {
@@ -659,6 +700,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
 
         var was_alive: array<u32, 6>;
         for (var u = 0u; u < num_units; u++) { was_alive[u] = state.entities[u].alive; }
+        var shortened_cc_target = 6u;
         switch (ev.kind) {
             // 1: Universal Auto-Attack Swing
             case 1u: {
@@ -681,7 +723,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                         // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
                         var effect_entity_1 = state.entities[tgt];
                         let final_dmg = absorb_damage(&effect_entity_1, raw_dmg, state.now);
-                        break_cc_on_damage(&effect_entity_1, final_dmg, state.now);
+                        if (break_cc_on_damage(&effect_entity_1, final_dmg, state.now)) { shortened_cc_target = tgt; }
                         state.entities[tgt] = effect_entity_1;
                         
                         state.entities[tgt].hp = max(0.0, state.entities[tgt].hp - final_dmg);
@@ -745,7 +787,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                             // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
                             var effect_entity_2 = state.entities[tgt];
                             let final_dmg = absorb_damage(&effect_entity_2, raw_dmg, state.now);
-                            break_cc_on_damage(&effect_entity_2, final_dmg, state.now);
+                            if (break_cc_on_damage(&effect_entity_2, final_dmg, state.now)) { shortened_cc_target = tgt; }
                             state.entities[tgt] = effect_entity_2;
                             let damage_dealt = min(final_dmg, state.entities[tgt].hp);
                             state.entities[tgt].hp = max(0.0, state.entities[tgt].hp - final_dmg);
@@ -854,7 +896,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                             // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
                             var effect_entity_5 = state.entities[tgt];
                             let tick_dmg = absorb_damage(&effect_entity_5, raw_dmg, state.now);
-                            break_cc_on_damage(&effect_entity_5, tick_dmg, state.now);
+                            if (break_cc_on_damage(&effect_entity_5, tick_dmg, state.now)) { shortened_cc_target = tgt; }
                             state.entities[tgt] = effect_entity_5;
                             let dealt = min(tick_dmg, state.entities[tgt].hp);
                             state.entities[tgt].hp = max(0.0, state.entities[tgt].hp - tick_dmg);
@@ -1034,7 +1076,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                                     // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
                                     var effect_entity_6 = state.entities[active_tgt];
                                     let final_dmg = absorb_damage(&effect_entity_6, raw_dmg, state.now);
-                                    break_cc_on_damage(&effect_entity_6, final_dmg, state.now);
+                                    if (break_cc_on_damage(&effect_entity_6, final_dmg, state.now)) { shortened_cc_target = active_tgt; }
                                     state.entities[active_tgt] = effect_entity_6;
 
                                     let damage_dealt = min(final_dmg, state.entities[active_tgt].hp);
@@ -1126,9 +1168,12 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                     }
 
                     // Schedule next decision: at least 500ms into the future, or after active GCD / cast / stun
-                    let busy_end = max(max(state.entities[src].gcd_end, state.entities[src].cast_end), incapacitated_until(state.entities[src]));
+                    let cast_busy_end = max(state.entities[src].gcd_end, state.entities[src].cast_end);
+                    let before_cc = max(state.now + 500u, cast_busy_end + 50u);
+                    let busy_end = max(cast_busy_end, incapacitated_until(state.entities[src]));
                     let next_decision = max(state.now + 500u, busy_end + 50u);
-                    enqueue(&queue, Event(next_decision, 5u, src, active_tgt, 0u, 0u));
+                    let cc_delay_origin = select(0u, before_cc, next_decision > before_cc);
+                    enqueue(&queue, Event(next_decision, 5u, src, active_tgt, 0u, cc_delay_origin));
                 }
             }
 
@@ -1137,7 +1182,9 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                     let aura = state.entities[src].auras[a];
                     if ((aura.aura_type & 0xFFu) == 8u && (aura.aura_type >> 8u) == ev.generation && aura.expires_at >= state.now && aura.next_tick_at == state.now) {
                         let old_hp = state.entities[src].hp;
-                        state.entities[src].hp = min(state.entities[src].max_hp, old_hp + state.entities[src].max_hp * 0.1 * get_healing_received_multiplier(state.entities[src], state.now));
+                        // Temporary tuning: each active Polymorph tick fills HP,
+                        // including through healing-reduction effects.
+                        state.entities[src].hp = state.entities[src].max_hp;
                         let healed = state.entities[src].hp - old_hp;
                         record_event(logging, state.now, src, src, ev.spell_id, 2u, healed);
                         if (state.entities[src].team == 0u) { damage_team0 += healed * time_weight; }
@@ -1172,6 +1219,11 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
             }
 
             default: {}
+        }
+        if (shortened_cc_target < num_units) {
+            // A hit may break Polymorph and then apply another CC (e.g. Horror).
+            // Use the final state so remaining/new CC and GCDs still gate acting.
+            resume_decision_after_cc_break(&queue, state.entities[shortened_cc_target], state.now);
         }
         for (var u = 0u; u < num_units; u++) {
             if (was_alive[u] == 1u && state.entities[u].alive == 0u) {

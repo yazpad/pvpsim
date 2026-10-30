@@ -148,7 +148,9 @@ Browser runtime verification is deferred at the user's request. Added Polymorph,
 Ice Barrier, Blink and Drain Life to the shared GPU engine, catalog and UI lists.
 These are simulator tuning values, not a claim of exact game-version fidelity.
 Polymorph uses independent full/half/quarter/immune DR, breaks on health damage,
-cancels casts and regenerates 10% maximum health per second (healing modifiers apply).
+cancels casts and, by temporary user-requested tuning, restores full maximum health
+on each one-second regeneration tick, ignoring healing reduction. Only effective
+healing is logged and scored.
 Ice Barrier is a self-only 60s absorb, with a 30s cooldown and 818 + 0.1 SP capacity.
 Blink moves up to 20 yd toward/away from the selected enemy according to the range
 gene, stops at pillars/bounds, and removes roots/hard stuns. It is subject to the
@@ -198,7 +200,8 @@ are preserved in [warrior-stance-experiment.patch](warrior-stance-experiment.pat
 The patch is against `8d58c1a`; inspect/reproduce it in an isolated checkout of that
 commit rather than applying it directly over the current research notes. It also
 contains the experimental `tests/native-gpu.c`, `tests/warrior-native.mjs` and the
-`test:gpu-native` package script, which are not active in the restored baseline.
+old `test:gpu-native` package script. The Warrior fixture remains archived; a
+generic version of the Vulkan runner is now used for the CC fixes below.
 
 The archived mechanics suite passed 39 prediction/live scenarios plus mutation
 through software Vulkan. However, battle-log(6) and battle-log(7) exposed poor
@@ -213,3 +216,41 @@ damage/healing values, log refresh at capacity, and corrected immune-CC reportin
 all predate the expansion and remain intact. Browser/GPU runtime verification is
 still deferred by user request; rollback checks cover host tests, production build
 and native WGSL validation/SPIR-V compilation.
+
+## Polymorph healing cancellation and CC decision resumption (2026-10-30)
+
+Native shader reproductions established two defects: a hit exactly on a Polymorph
+tick could break the effect and then heal the victim to full, and a damage break at
+1.50s could leave the victim's next decision postponed until 5.05s. Expired
+Polymorph slots could also be extended by subsequent damage and admit stale heals.
+
+Damage now clears Polymorph's `next_tick_at` and only shortens an aura that was
+still active. Queued generation/next-tick checks reject cancelled heals, including
+same-timestamp events. Active Polymorph retains the user-requested full-HP ticks;
+zero health damage from a fully absorbed hit retains existing break behavior.
+
+After an event shortens incapacitation, the engine can decrease the timestamp of
+the victim's existing decision and sift it upward in the min-heap. The decision's
+otherwise-unused `generation` field records its pre-CC due time (zero means it was
+not delayed by CC). This prevents an ordinary pending turn from being accelerated
+by a brief CC application/break. GCD, casts, remaining CC and the existing 50ms
+post-busy delay still apply. Processing occurs after all effects from the hit, so
+a Death Coil that breaks Polymorph and applies Horror does not free the victim.
+No extra decision is enqueued, even when the heap is full, and dead victims are
+not resumed. Fear breaks use the same correction. All four damage paths use it.
+
+`npm run test:gpu-native` now runs `tests/cc-native.mjs`: 24 scenarios execute the
+production `advance_live` and diagnostic `predict_reference` entry points through
+Vulkan, comparing occupied heap entries and state words with 50ms live commits.
+It checks stale/exact-time/expired/old-generation heals, retained full-HP healing,
+decision cadence, GCD/overlapping CC, no duplicate turns, full heaps, lethal hits,
+absorbs and swing/cast/instant/periodic damage paths. It requires a C compiler,
+Vulkan headers/loader/ICD and Naga (`NAGA` overrides the executable path); it uses
+Lavapipe by default when installed, or the ICD selected by `VK_DRIVER_FILES`.
+Host tests, production build and native WGSL validation/SPIR-V compilation pass.
+
+The conditional queue scan is bounded by 40 entries and runs only after actual
+CC shortening. State/buffer sizes, queue capacity, dispatch/readback count, search
+budget, mutation and fitness formulas are unchanged. Correctly released units can
+now generate legitimate combat events previously suppressed by the bug; hardware
+throughput impact has not been measured. Browser execution remains deferred.
