@@ -11,6 +11,12 @@ const {SPELL_CATALOG, MAX_SPELLS} = await load('src/constants.ts');
 const {unitCooldowns} = await load('src/cooldowns.ts');
 const {visibleEffects} = await load('src/effects.ts');
 assert.equal(SPELL_CATALOG.length, MAX_SPELLS);
+assert.equal(MAX_SPELLS, 21, 'Rolled-back Warrior abilities remain in the active catalog');
+assert.deepEqual(SPELL_CATALOG.filter(s => s.classId === 1).map(s => s.name),
+  ['Mortal Strike', 'Rend', 'Hamstring', 'Shield Wall']);
+for (const name of ['Polymorph', 'Ice Barrier', 'Blink', 'Drain Life']) {
+  assert(SPELL_CATALOG.some(s => s.name === name), `Rollback removed ${name}`);
+}
 const coil = SPELL_CATALOG[16];
 assert.equal(coil.name, 'Death Coil');
 assert.equal(coil.selfHealRatio, 1);

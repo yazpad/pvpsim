@@ -1,0 +1,1726 @@
+diff --git a/TODO.md b/TODO.md
+index 7412cc4..08f7737 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -47,9 +47,9 @@ Status below reflects source inspection plus the shared-engine refactor, not a f
+ - [x] Mutation filtering for spell ownership, resource type, and available power (with future steps `h > 0` checking ownership so spenders can be planned after future resource generation), plus 50% coordinate-ascent single-unit mutations.
+ - [x] Enforce individual spell cooldowns in live combat, rollouts, and `h == 0` action masking using packed 100ms cooldown timestamps in `EntityState.auras[i].pad`.
+ - [x] Make live combat GPU-only. Both `simulate_candidate` and `advance_live` call `advance_combat`; TypeScript only dispatches and decodes snapshots/events. The live event heap persists between steps and is cloned for rollouts.
+-- [ ] Remove behavioral fallbacks and class/resource-specific decisions:
+-  - `seedInitialBestPlan` in `src/simulator.ts` still hardcodes initial spell choices (Mortal Strike, Flash Heal, Frostbolt, Corruption) and desired ranges (Warrior 0y, Priest 20y, Casters 30y).
+-  - WGSL `mutate_population` retains hardcoded spatial range logic: rage users forced to 0y, mana users forced into discrete choices `[5y, 15y, 25y, 30y]`.
++- [x] Remove the audited opening spell/range and class-based range decisions:
++  - `seedInitialBestPlan` now seeds Idle, keeps the configured target and holds the current separation; no signature spells or class ranges.
++  - WGSL `mutate_population` samples the same 0–72 yd distance space for every entity.
+   - [x] Spell ownership now uses catalog class metadata rather than shader ID-range checks; configurable entity loadouts remain future work.
+ - [x] Align fitness with pure-outcome requirements (effective healing only, no unabsorbed shield application credit, temporal discount factor `time_weight`) and eliminate atomic race conditions in `find_best_candidate`.
+ 
+@@ -74,25 +74,28 @@ Evidence: `src/shaders/sim.wgsl.ts` (`simulate_candidate`, `mutate_population`,
+ 
+ Evidence: `src/shaders/sim.wgsl.ts` (`AuraSlot`, `apply_aura`, modifier helpers, `apply_cc`, event kind 3); `src/simulator.ts` (GPU state packing/decoding).
+ 
+-### Warrior expansion — next priority (user request, 2026-10-30)
+-- [ ] Add Battle, Defensive and Berserker stances as explicit planner choices, with data-driven ability requirements, stance modifiers, switching cooldown and rage retention rules. Use Classic stance/ability rules as the baseline, applying known Forever-specific differences; specify talent assumptions when they affect values.
+-- [ ] Add Charge and Intercept with stance requirements, minimum/maximum ranges, resource cost/generation, cooldowns, movement and CC described by catalog data. Resolve movement against pillars/bounds in the shared GPU engine.
+-- [ ] Allow stance switching independently of the normal spell GCD; model its own lockout without an automatic stance-switch fallback. Search must plan the stance transition and follow-up ability.
+-- [ ] Remove hardcoded initial spell/range seeds and resource-based range mutation as part of this expansion, so Warrior movement and stance usage can emerge from search.
+-- [ ] Extend cooldown storage beyond the current spell-21 limit before appending more abilities; centralize storage capacity and validate host/diagnostic layouts.
+-- [ ] Show current stance, stance changes, Charge/Intercept movement and CC in unit frames and the combat log.
++### Warrior expansion — implemented (user request, 2026-10-30)
++- [x] Add Battle, Defensive and Berserker stances as explicit planner choices, with data-driven ability requirements, stance modifiers, switching cooldown and rage retention rules. Use Classic stance/ability rules as the baseline, applying known Forever-specific differences; specify talent assumptions when they affect values.
++- [x] Add Charge and Intercept with stance requirements, minimum/maximum ranges, resource cost/generation, cooldowns, movement and CC described by catalog data. Resolve movement against pillars/bounds in the shared GPU engine.
++- [x] Allow stance switching independently of the normal spell GCD; model its own lockout without an automatic stance-switch fallback. Search must plan the stance transition and follow-up ability.
++- [x] Remove hardcoded initial spell/range seeds and resource-based range mutation as part of this expansion, so Warrior movement and stance usage can emerge from search.
++- [x] Extend cooldown storage beyond the previous spell-21 limit before appending more abilities; centralize storage capacity and validate host/diagnostic layouts.
++- [x] Show current stance, stance changes, Charge/Intercept movement and CC in unit frames and the combat log.
+ - [ ] Follow-up Warrior candidates: Pummel, Disarm, Berserker Rage and Execute. These are proposed additions, not implemented mechanics.
+-- [ ] Validate stance legality, rage changes, switch lockout, Charge/Intercept range/LoS/collision, cooldowns and live/rollout agreement. Browser verification remains deferred by user request.
++- [x] Validate stance legality, rage changes, switch lockout, Charge/Intercept range/LoS/collision, cooldowns and live/rollout agreement. Native Vulkan compute checks cover uninterrupted prediction vs 50 ms commits; browser verification remains deferred by user request.
++- [ ] Measure hardware rollout throughput and fixed-time planning quality before/after this change. Entity state grew 100 → 115 words (+15%); arena grew 2480 → 2840 bytes (+14.5%). Plan buffers/population/workgroup size are unchanged. Software Vulkan correctness tests are not hardware performance measurements.
++- [ ] Audit exact Forever PvP stun DR categories/reset timing and charge movement speed against observed Forever behavior; currently uses the shared simulator's deterministic 15s DR reset, separate controlled-stun/Fear counters, and 42 yd/s travel.
++- [ ] Existing Shield Wall numerical tuning/shield equipment requirements and broader Classic combat fidelity remain separate audit work; this expansion enforces its stance requirement.
+ 
+ ### Spell catalog — expanded, with remaining abilities
+-- [x] Warrior: Mortal Strike, Rend, Hamstring, Shield Wall.
++- [x] Warrior: Mortal Strike, Rend, Hamstring, Shield Wall, Charge, Intercept; explicit Battle/Defensive/Berserker stance choices.
+ - [x] Priest: Flash Heal, Renew, Power Word: Shield, Shadow Word: Pain, Psychic Scream.
+ - [x] Mage: Frostbolt, Fire Blast, Frost Nova.
+ - [x] Warlock: Corruption, Shadow Bolt, Fear, Death Coil (damage, effective self-heal, independent 3s horror, 120s cooldown).
+ - [x] Add Polymorph (independent DR, damage break, regeneration), Ice Barrier (self absorb), Blink (planned direction, root/stun escape, collision), and Drain Life (interruptible channel and effective leech). Browser verification deferred.
+ - [ ] Implement AoE Psychic Scream/Frost Nova and complete existing spell mechanics using the aura/CC work above. Catalog presence does not establish full live/rollout parity.
+ 
+-Evidence: `src/constants.ts` (`SPELL_CATALOG`, 21 entries including Idle).
++Evidence: `src/constants.ts` (`SPELL_CATALOG`, 23 entries including Idle).
+ 
+ ### Arena and visualizer
+ - [x] Continuous 2D desired-range movement (always referenced against enemy target so healers can kite while healing allies) and arena boundary clamps in both live stepping and rollouts.
+@@ -113,17 +116,20 @@ Evidence: `src/main.ts` (unit frame and arena rendering, log export, playback);
+ - [ ] DEFERRED by user (2026-10-30): Verify browser execution of the current shader and real match behavior. Native compilation does not establish browser runtime correctness.
+ 
+ ### Battle-log follow-up (2026-10-30)
++- [x] Fix battle-log(6) failed Charge/Intercept attempts freezing ordinary movement: validate the dash before movement, preserve the planner's range intent on rejection, and render active dashes from authoritative state. Native GPU tests include approach, retreat and range-boundary cases.
++- [ ] Improve Warrior stance/range search quality and investigate stance churn. The current movement fix leaves the search budget, estimator and mutation policy unchanged by user agreement; estimator resets can keep the adaptive population at its minimum.
+ - [x] Add animated Drain Life channel beam driven by cast/aura state; stop on cancellation, expiry or death.
+ - [x] Stop reporting DR-immune CC attempts as successful CC and omit zero-damage spell events.
+ - [ ] Investigate wasted Polymorph choices with candidate-score instrumentation. Battle log (5) shows attempts during DR immunity and effective casts broken by allied damage; no hardcoded Polymorph-selection rule exists. Current export lacks per-candidate reasoning/scores.
+-- Remaining behavioral hardcoding: initial spell/range seeds and resource-based range mutation. These have not been removed.
++- [x] Removed the audited initial signature spell/range seeds and resource-based range mutation during the Warrior expansion.
+ 
+ ## 3. Recommended Next Work
+ 
+-**Current priority (2026-10-30): Warrior stances, Charge and Intercept**, including
+-removal of the remaining opening/range heuristics and adequate cooldown storage.
+-See the Warrior expansion checklist above. This supersedes the earlier signature
+-ability priority below; those four abilities have already been added.
++**Warrior stances, Charge and Intercept are implemented (2026-10-30)**, including
++opening/range heuristic cleanup and extended cooldown storage. Native software
++Vulkan checks pass for 39 live/prediction scenarios plus mutation. Hardware
++performance measurement remains pending. Next spell candidates are Pummel, Disarm,
++Berserker Rage and Execute, alongside the outstanding aura/CC mechanics below.
+ 
+ 1. **DEFERRED (user request, 2026-10-30): Verify shared-engine runtime parity in a WebGPU browser.** The duplicate CPU combat loop is removed. Run `diagnostics/combat-parity.html` to compare uninterrupted predictions, midfight predictions, and 50 ms live commits for casts, periodic effects, shields, and roots. Build and native WGSL/SPIR-V compilation pass; browser execution remains unverified in this headless sandbox.
+ 2. **Aura stacks, dispels & extended CC mechanics (after signature abilities):**
+@@ -137,9 +143,9 @@ ability priority below; those four abilities have already been added.
+ 4. **UI feedback for cooldowns and split aura placement:**
+    - Render cooldown sweep overlays on abilities.
+    - Split positive buffs and harmful debuffs into separate rows.
+-5. **Eliminate remaining hardcoded heuristic decisions (Ground Rule #1):**
+-   - Generalize `seedInitialBestPlan` in `simulator.ts` to avoid hardcoded spell/range assignments.
+-   - Refactor `mutate_population` range selection into generic data-driven structures. Spell ownership now reads catalog class metadata; configurable entity loadouts remain future work.
++5. **Opening/range heuristic cleanup — completed with Warrior expansion:**
++   - [x] Generalize `seedInitialBestPlan` in `simulator.ts` to avoid hardcoded spell/range assignments.
++   - [x] Make `mutate_population` range selection class-independent. Spell ownership reads catalog class metadata; configurable entity loadouts remain future work.
+ 
+ Validate browser/GPU behavior as these changes land. Browser runtime parity is explicitly deprioritized by user request (2026-10-30). Signature abilities are the current priority, followed by aura/CC mechanics; retain browser verification as deferred work.
+ 
+diff --git a/diagnostics/README.md b/diagnostics/README.md
+index 23e9a31..cac9808 100644
+--- a/diagnostics/README.md
++++ b/diagnostics/README.md
+@@ -182,3 +182,97 @@ Drain Life now draws a green channel with animated strands and life motes moving
+ from victim to caster. It reads authoritative active cast and matching aura source
+ IDs, uses displayed unit positions, and stops on observed interruption, expiration
+ or death. It adds no simulation, readback or dispatch work. Host lifecycle tests pass.
++
++
++## Warrior stances, Charge and Intercept (2026-10-30)
++
++The plan remains one u32 per unit/decision: spell byte 0, range byte 1,
++target byte 2, stance request bits 24..25. A zero stance request means keep the
++current stance. Switching never happens implicitly to satisfy an ability.
++Battle/Defensive/Berserker are explicit configuration/table state; the shared
++GPU engine applies a 1s stance lockout independent of spell GCD. Future plan genes
++may request abilities unavailable in the snapshot stance, so the engine can test
++stance transitions followed by abilities. First-step mutation checks resource
++availability after the requested legal stance change, including Rage retention.
++
++Default Forever assumptions: trainer Tactical Mastery retains 10 Rage, with no
++Improved Tactical Mastery assumed. `stanceRageRetention` is per-entity data (25
++models the additional 15 retention from five points). Defensive multiplies outgoing
++and incoming damage by 0.9. Berserker increases incoming damage by 10% and melee
++crit chance by 3 percentage points. Melee critical hits now use the entity's existing
++crit stat plus stance bonus, with deterministic event-keyed GPU RNG independent of
++mutation seeds/readback/commit size; the previous engine stored crit without using
++it. Threat has no outcome in this PvP engine and is not scored.
++
++Charge uses Battle, out-of-combat gating, 8–25 yd range, 15s cooldown, 15 Rage
++generation and a 1s stun. Intercept uses Berserker, 10 Rage, 8–25 yd range,
++30s cooldown, 100 base physical damage and a 3s stun. CC applies at activation;
++movement travels at the simulator's explicit 42 yd/s to 3 yd from the target's
++activation position. One arrival event terminates each dash; positions are evaluated
++from absolute start/end times so arbitrary commit partitions agree. Collision uses
++a swept segment against inflated pillars and bounds. Roots and incapacitation
++cancel an active dash at its authoritative current position. Charge/Intercept do
++not use normal walking to secretly satisfy the minimum-range check.
++
++Combat state is refreshed by hostile resolutions, damage ticks and assistance to
++an ally already in combat, with a 5s inactivity timeout. Target selection/movement
++alone never enters combat. Controlled stun DR is separate from Fear DR. The engine
++retains a deterministic 15s reset; exact Forever PvP DR group/reset fidelity and
++charge transit speed need in-game validation. Existing Shield Wall numerical tuning,
++shield equipment requirements, hit tables, armor formula, Rage generation and other
++legacy mechanics are not made fully Classic-accurate by this expansion.
++
++Rules references: [Classic stance implementation](https://github.com/wowsims/classic/blob/master/sim/warrior/stances.go),
++[Forever client stance/macro data](https://foreverdb.net/class/Warrior/macros),
++[Forever Berserker tooltip](https://foreverdb.net/spell/2458).
++The Forever-specific baseline retention follows extracted client data; talent choices
++are configuration, never planner behavior rules.
++
++`npm run test:gpu-native` compiles the production WGSL plus the diagnostic prediction
++entry point with Naga, builds `tests/native-gpu.c`, and executes compute through Vulkan.
++It needs a C compiler, Vulkan headers/loader, an ICD, and `naga` (`NAGA` overrides its
++path). It defaults to Lavapipe when available; `VK_DRIVER_FILES` selects a different
++ICD. Fixtures execute production live/prediction/mutation entry points, with no CPU
++combat reference. It checks legality, retention, cooldowns, GCD-independent switching,
++collision, roots, transit across commits, stance modifiers and opposing-population
++isolation. It also exercises a short root that expires before the next dash event.
++Browser validation remains deferred; successful software Vulkan execution establishes
++native compute behavior, not browser compiler compatibility or hardware throughput.
++
++Performance costs to flag: EntityState grew from 100 to 115 words (+15%), and ArenaState
++from 2480 to 2840 bytes (+14.5%). The private arena+queue footprint grew from 3448 to
++3808 bytes (+10.4%) before compiler optimization/register allocation. Each dash adds
++one queue event; active dashes trigger bounded position/cancellation checks. Extra
++stance decisions during an existing spell GCD occur only when the next gene requests
++a supported different stance. A 64-byte stance uniform was added; no new readback or
++compute pass was added to production. Plan buffers, workgroup size, horizon and
++population limits are unchanged. Generic movement and explicit stance search enlarge
++the search space, so fixed-time planning quality needs measurement too.
++
++There is no physical GPU exposed in this sandbox. **No hardware throughput regression
++has been established or ruled out.** Compare fixed-roster, fixed-seed benchmark runs
++at the same population/time budget using `runBatchBenchmark`, and compare live queue
++latency/plan age using exported scheduling data. The 15% entity growth is a known
++memory cost, not a prediction of a 15% slowdown.
++
++## Failed gap-closer movement correction (2026-10-30)
++
++Charge/Intercept eligibility is now evaluated at the start of the decision, after
++the explicit stance request and resource update. A legal dash replaces walking;
++a rejected dash preserves the plan's independent desired-range movement, including
++retreat or holding position. A rejected dash cannot become a cast later in that
++same decision because walking crossed its range boundary. Range, stance, combat,
++resource, GCD, cooldown, root, LoS and collision requirements still apply.
++
++Rendering distinguishes an authoritative active dash from a selected spell and
++continues to extrapolate the planned range movement after rejected attempts. It
++does not duplicate ability legality/combat simulation in TypeScript.
++
++Added 11 native GPU scenarios, bringing the suite to 39 live/prediction scenarios
++plus mutation (79 executions). The additions check failed approach/retreat,
++wrong stance, combat status, cooldown, GCD, resource shortage, collision, range
++boundaries, a legal near-minimum-range dash, roots and ordinary caster movement.
++Host checks and the build also pass. Search scheduling, population, mutation,
++state/buffer sizes, dispatches and readbacks are unchanged. Hardware timing and
++browser verification remain unmeasured/deferred. This fixes failed-dash freezes;
++it does not resolve stance churn or the adaptive throughput estimator issue.
+diff --git a/diagnostics/combat-parity.ts b/diagnostics/combat-parity.ts
+index c5e1948..094a800 100644
+--- a/diagnostics/combat-parity.ts
++++ b/diagnostics/combat-parity.ts
+@@ -1,11 +1,11 @@
+ import { SIMULATION_WGSL } from '../src/shaders/sim.wgsl';
+ import {
+-  SPELL_CATALOG,
+-  MAX_SPELLS,
+   MAX_ENTITIES,
+   ARENA_HEADER_WORDS,
+   ENTITY_BASE_WORDS,
+-  SPELL_WORDS,
++  packSpellCatalog,
++  packStanceCatalog,
++  packAction,
+   ENTITY_WORDS,
+   ARENA_WORDS,
+   ARENA_BYTES,
+@@ -49,6 +49,7 @@ function arena(classes: number[], teams: number[], positions: number[]) {
+     u[b + 13] = 2000; f[b + 14] = 300; f[b + 15] = 300;
+     f[b + 17] = 500; f[b + 18] = positions[i] ?? 20; f[b + 19] = 20;
+     f[b + 20] = 7; u[b + 25] = classes[i] ?? 0;
++    if (classes[i] === 1) { u[b + 37] = 1; u[b + 39] = 14; f[b + 40] = 10; }
+   }
+   return buffer;
+ }
+@@ -66,20 +67,13 @@ async function run() {
+   const pipelines = await Promise.all(['advance_live', 'predict_reference'].map(entryPoint =>
+     device.createComputePipelineAsync({layout: 'auto', compute: {module, entryPoint}})));
+   const buffers: Record<number, GPUBuffer> = {};
+-  for (const [binding, size] of [[0, MAX_SPELLS * SPELL_WORDS * 4], [1, ARENA_BYTES], [4, BEST_PLAN_BYTES], [7, SIM_QUEUE_BYTES], [8, 16], [9, COMBAT_EVENTS_BYTES], [10, ARENA_BYTES + SIM_QUEUE_BYTES], [12, 32]]) {
+-    buffers[binding] = device.createBuffer({size, usage: (binding === 8 ? GPUBufferUsage.UNIFORM : GPUBufferUsage.STORAGE)
++  for (const [binding, size] of [[0, packSpellCatalog().byteLength], [1, ARENA_BYTES], [4, BEST_PLAN_BYTES], [7, SIM_QUEUE_BYTES], [8, 16], [9, COMBAT_EVENTS_BYTES], [10, ARENA_BYTES + SIM_QUEUE_BYTES], [12, 32], [15, 64]]) {
++    buffers[binding] = device.createBuffer({size, usage: (binding === 8 || binding === 15 ? GPUBufferUsage.UNIFORM : GPUBufferUsage.STORAGE)
+       | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST});
+   }
+-  const spellData = new ArrayBuffer(MAX_SPELLS * SPELL_WORDS * 4), su = new Uint32Array(spellData), sf = new Float32Array(spellData);
+-  SPELL_CATALOG.forEach((s, i) => {
+-    const b = i * SPELL_WORDS;
+-    const fields = [s.castTimeMs, s.cooldownMs, s.cost, s.powerType, s.rangeYards, s.baseDamageMin,
+-      s.baseDamageMax, s.scaling, s.isHeal, s.isDot, s.dotDurationMs, s.dotTickMs,
+-      s.dotDamagePerTick, s.ccType, s.ccDurationMs, s.auraType, s.selfHealRatio ?? 0, s.classId ?? 0, s.selfOnly ? 1 : 0, s.blinkDistance ?? 0, s.channelMs ?? 0, s.absorbBase ?? 0];
+-    fields.forEach((value, k) => { ([2, 4, 5, 6, 7, 12, 16, 19, 21].includes(k) ? sf : su)[b + k] = value; });
+-  });
+-  device.queue.writeBuffer(buffers[0], 0, spellData);
+-  const bindings = [[0, 1, 4, 7, 8, 9, 12], [0, 1, 4, 7, 8, 9, 10]];
++  device.queue.writeBuffer(buffers[0], 0, packSpellCatalog());
++  device.queue.writeBuffer(buffers[15], 0, packStanceCatalog());
++  const bindings = [[0, 1, 4, 7, 8, 9, 12, 15], [0, 1, 4, 7, 8, 9, 10, 15]];
+   const groups = pipelines.map((pipeline, i) => device.createBindGroup({layout: pipeline.getBindGroupLayout(0),
+     entries: bindings[i].map(binding => ({binding, resource: {buffer: buffers[binding]}}))}));
+   const dispatch = (index: number, until: number) => {
+@@ -139,7 +133,7 @@ async function run() {
+       device.queue.writeBuffer(buffers[12], 0, new Uint32Array(8));
+       const plan = new Uint32Array(BEST_PLAN_WORDS);
+       for (let i = 0; i < MAX_ENTITIES; i++) for (let h = 0; h < 8; h++) {
+-        plan[i * 8 + h] = (fixture.spells[i] ?? 0) | ((fixture.ranges?.[i] ?? 20) << 8) | ((fixture.targets[i] ?? 0) << 16);
++        plan[i * 8 + h] = packAction(fixture.spells[i] ?? 0, fixture.ranges?.[i] ?? 20, fixture.targets[i] ?? 0);
+       }
+       device.queue.writeBuffer(buffers[4], 0, plan);
+       // Initial auras, casts and queue are cloned by predict_reference exactly as in a rollout.
+diff --git a/package.json b/package.json
+index dac5494..2f0e444 100644
+--- a/package.json
++++ b/package.json
+@@ -8,6 +8,7 @@
+   "scripts": {
+     "dev": "vite",
+     "test": "node tests/scheduling.mjs && node tests/abilities.mjs",
++    "test:gpu-native": "node tests/warrior-native.mjs",
+     "build": "tsc --noEmit && vite build",
+     "preview": "vite preview"
+   },
+diff --git a/src/constants.ts b/src/constants.ts
+index 1d1fd40..17bbeb3 100644
+--- a/src/constants.ts
++++ b/src/constants.ts
+@@ -27,13 +27,13 @@ export const DEFAULT_ARENA_PILLARS: ArenaPillar[] = [
+ 
+ // Shared GPU/CPU memory layout constants for ArenaState & EntityState
+ export const ARENA_HEADER_WORDS = 4;
+-export const ENTITY_BASE_WORDS = 36;
++export const ENTITY_BASE_WORDS = 51;
+ export const AURA_SLOT_WORDS = 8;
+-export const ENTITY_WORDS = ENTITY_BASE_WORDS + MAX_AURAS * AURA_SLOT_WORDS; // 36 + 64 = 100 words
++export const ENTITY_WORDS = ENTITY_BASE_WORDS + MAX_AURAS * AURA_SLOT_WORDS; // 51 + 64 = 115 words
+ export const PILLAR_WORDS = 4; // x, y, r, pad
+-export const ARENA_PILLARS_OFFSET_WORDS = ARENA_HEADER_WORDS + MAX_ENTITIES * ENTITY_WORDS; // 604
+-export const ARENA_WORDS = ARENA_PILLARS_OFFSET_WORDS + MAX_PILLARS * PILLAR_WORDS; // 604 + 16 = 620 words
+-export const ARENA_BYTES = ARENA_WORDS * 4; // 2480 bytes
++export const ARENA_PILLARS_OFFSET_WORDS = ARENA_HEADER_WORDS + MAX_ENTITIES * ENTITY_WORDS; // 694
++export const ARENA_WORDS = ARENA_PILLARS_OFFSET_WORDS + MAX_PILLARS * PILLAR_WORDS; // 694 + 16 = 710 words
++export const ARENA_BYTES = ARENA_WORDS * 4; // 2840 bytes
+ export const SIM_QUEUE_WORDS = 2 + 40 * 6; // 242 words
+ export const SIM_QUEUE_BYTES = SIM_QUEUE_WORDS * 4; // 968 bytes
+ export const COMBAT_EVENTS_WORDS = 1 + 80 * 6; // 481 words
+@@ -66,6 +66,16 @@ export const ENTITY_FIELD_OFFSETS = {
+     extraCooldowns3: 33,
+     polymorphDrCount: 34,
+     polymorphDrResetAt: 35,
++    extraCooldowns4: 36,
++    stance: 37,
++    stanceReadyAt: 38,
++    stanceMask: 39,
++    combatUntil: 41,
++    dashStart: 42,
++    dashEnd: 43,
++    controlledStunCount: 48,
++    controlledStunResetAt: 49,
++    controlledStunEnd: 50,
+   },
+   float: {
+     hp: 4,
+@@ -79,6 +89,11 @@ export const ENTITY_FIELD_OFFSETS = {
+     posX: 18,
+     posY: 19,
+     speed: 20,
++    stanceRageRetention: 40,
++    dashOriginX: 44,
++    dashOriginY: 45,
++    dashDestX: 46,
++    dashDestY: 47,
+   },
+ } as const;
+ 
+@@ -102,13 +117,13 @@ export interface CombatLogEntry {
+   targetId?: number;
+   targetName?: string;
+   targetTeam?: number;
+-  type: 'damage' | 'heal' | 'cast_start' | 'cc' | 'death' | 'move';
++  type: 'damage' | 'heal' | 'cast_start' | 'cc' | 'death' | 'move' | 'stance';
+   spellName?: string;
+   value?: number;
+   text: string;
+ }
+ 
+-export const MAX_SPELLS = 21;
++export const MAX_SPELLS = 23;
+ 
+ export interface AuraDef {
+   id: number;
+@@ -148,6 +163,11 @@ export interface SpellDef {
+   blinkDistance?: number;
+   channelMs?: number;
+   absorbBase?: number;
++  stanceMask?: number;
++  minRangeYards?: number;
++  requiresOutOfCombat?: boolean;
++  powerGain?: number;
++  dashSpeed?: number;
+   selfHealRatio?: number; // fraction of damage dealt restored to caster
+   auraType: number; // 0: None, 1: MortalWounds, 2: ShieldWall, 3: PWShield, 4: Renew, 5: Slow, 6: Root
+ }
+@@ -176,7 +196,7 @@ const spellDefinitions: SpellDef[] = [
+   },
+   // --- Warrior (Rage: 1) ---
+   {
+-    id: 1, classId: 1,
++    id: 1, classId: 1, stanceMask: 14,
+     name: "Mortal Strike",
+     icon: "/icons/ability_warrior_savageblow.png",
+     castTimeMs: 0,
+@@ -197,7 +217,7 @@ const spellDefinitions: SpellDef[] = [
+     auraType: 1, // Mortal Wounds (-50% healing taken)
+   },
+   {
+-    id: 2, classId: 1,
++    id: 2, classId: 1, stanceMask: 6,
+     name: "Rend",
+     icon: "/icons/ability_gouge.png",
+     castTimeMs: 0,
+@@ -218,7 +238,7 @@ const spellDefinitions: SpellDef[] = [
+     auraType: 7, // Periodic DoT aura
+   },
+   {
+-    id: 3, classId: 1,
++    id: 3, classId: 1, stanceMask: 10,
+     name: "Hamstring",
+     icon: "/icons/ability_shockwave.png",
+     castTimeMs: 0,
+@@ -239,7 +259,7 @@ const spellDefinitions: SpellDef[] = [
+     auraType: 5, // 50% slow for 8s
+   },
+   {
+-    id: 4, classId: 1,
++    id: 4, classId: 1, stanceMask: 4,
+     name: "Shield Wall",
+     icon: "/icons/ability_warrior_shieldwall.png",
+     castTimeMs: 0,
+@@ -527,6 +547,21 @@ const spellDefinitions: SpellDef[] = [
+     rangeYards: 30, baseDamageMin: 0, baseDamageMax: 0, scaling: 0.5,
+     isHeal: 0, isDot: 1, dotDurationMs: 5000, dotTickMs: 1000, dotDamagePerTick: 71,
+     ccType: 0, ccDurationMs: 0, auraType: 7, classId: 4, channelMs: 5000, selfHealRatio: 1,
++  },
++  {
++    id: 21, classId: 1, name: "Charge", icon: "/icons/ability_warrior_charge.png",
++    castTimeMs: 0, cooldownMs: 15000, cost: 0, powerType: POWER_TYPE_RAGE,
++    rangeYards: 25, minRangeYards: 8, baseDamageMin: 0, baseDamageMax: 0, scaling: 0,
++    isHeal: 0, isDot: 0, dotDurationMs: 0, dotTickMs: 0, dotDamagePerTick: 0,
++    ccType: 1, ccDurationMs: 1000, auraType: 0, stanceMask: 2,
++    requiresOutOfCombat: true, powerGain: 15, dashSpeed: 42,
++  },
++  {
++    id: 22, classId: 1, name: "Intercept", icon: "/icons/ability_rogue_sprint.png",
++    castTimeMs: 0, cooldownMs: 30000, cost: 10, powerType: POWER_TYPE_RAGE,
++    rangeYards: 25, minRangeYards: 8, baseDamageMin: 100, baseDamageMax: 100, scaling: 0,
++    isHeal: 0, isDot: 0, dotDurationMs: 0, dotTickMs: 0, dotDamagePerTick: 0,
++    ccType: 1, ccDurationMs: 3000, auraType: 0, stanceMask: 8, dashSpeed: 42,
+   }
+ ];
+ 
+@@ -537,4 +572,46 @@ export const SPELL_CATALOG: SpellDef[] = spellDefinitions.map(spell => ({
+   selfOnly: spell.selfOnly ?? spell.id === 4,
+   absorbBase: spell.absorbBase ?? (spell.auraType === 3 ? 500 : 0),
+ }));
+-export const SPELL_WORDS = 22;
++export const SPELL_WORDS = 27;
++
++// Cooldown capacity is explicit rather than inferred from the bound catalog.
++// IDs 0..15 use aura pads; 16..23 use four additional packed words.
++export const COOLDOWN_CAPACITY = 24;
++export const STANCE_SWITCH_MS = 1000;
++export const COMBAT_TIMEOUT_MS = 5000;
++export const STANCE_CATALOG = [
++  {id: 0, name: 'None', icon: '', damageDealt: 1, damageTaken: 1, critBonus: 0},
++  {id: 1, name: 'Battle Stance', icon: '/icons/ability_warrior_offensivestance.png', damageDealt: 1, damageTaken: 1, critBonus: 0},
++  {id: 2, name: 'Defensive Stance', icon: '/icons/ability_warrior_defensivestance.png', damageDealt: 0.9, damageTaken: 0.9, critBonus: 0},
++  {id: 3, name: 'Berserker Stance', icon: '/icons/ability_warrior_innerrage.png', damageDealt: 1, damageTaken: 1.1, critBonus: 0.03},
++] as const;
++// Forever trainer Tactical Mastery retains 10 Rage; Improved Tactical Mastery
++// adds 3 per point (0..5). Default uses the trainer passive, no assumed talents.
++export const FOREVER_BASE_RAGE_RETENTION = 10;
++
++export function packAction(spellId: number, desiredRange: number, targetId: number, stance = 0) {
++  return ((spellId & 255) | ((desiredRange & 255) << 8) | ((targetId & 255) << 16) | ((stance & 3) << 24)) >>> 0;
++}
++export function unpackAction(gene: number) {
++  return {spellId: gene & 255, desiredRange: (gene >>> 8) & 255, targetId: (gene >>> 16) & 255, stance: (gene >>> 24) & 3};
++}
++
++// One layout writer for production, diagnostics and native fixtures.
++export function packSpellCatalog() {
++  if (SPELL_CATALOG.length > COOLDOWN_CAPACITY) throw new Error('Spell catalog exceeds packed cooldown capacity');
++  const data = new ArrayBuffer(SPELL_CATALOG.length * SPELL_WORDS * 4);
++  const u = new Uint32Array(data), f = new Float32Array(data);
++  SPELL_CATALOG.forEach((s, i) => {
++    const fields = [s.castTimeMs, s.cooldownMs, s.cost, s.powerType, s.rangeYards,
++      s.baseDamageMin, s.baseDamageMax, s.scaling, s.isHeal, s.isDot,
++      s.dotDurationMs, s.dotTickMs, s.dotDamagePerTick, s.ccType, s.ccDurationMs,
++      s.auraType, s.selfHealRatio ?? 0, s.classId ?? 0, Number(s.selfOnly ?? false),
++      s.blinkDistance ?? 0, s.channelMs ?? 0, s.absorbBase ?? 0, s.stanceMask ?? 0,
++      s.minRangeYards ?? 0, Number(s.requiresOutOfCombat ?? false), s.powerGain ?? 0, s.dashSpeed ?? 0];
++    fields.forEach((value, k) => { ([2, 4, 5, 6, 7, 12, 16, 19, 21, 23, 25, 26].includes(k) ? f : u)[i * SPELL_WORDS + k] = value; });
++  });
++  return data;
++}
++export function packStanceCatalog() {
++  return new Float32Array(STANCE_CATALOG.flatMap(s => [s.damageDealt, s.damageTaken, s.critBonus, 0]));
++}
+diff --git a/src/cooldowns.ts b/src/cooldowns.ts
+index 7743e07..3b09c23 100644
+--- a/src/cooldowns.ts
++++ b/src/cooldowns.ts
+@@ -7,7 +7,7 @@ export function unitCooldowns(unit: EntityModel, now: number) {
+   return SPELL_CATALOG.filter(s => s.id > 0 && s.classId === classIds[unit.className]).map(spell => {
+     const id = spell.id;
+     // Each aura pad holds two unsigned 16-bit timestamps in 100 ms units.
+-    const packed = id >= 20 ? unit.extraCooldowns3 ?? 0 : id >= 18 ? unit.extraCooldowns2 ?? 0 : id >= 16 ? unit.extraCooldowns ?? 0 : unit.auras[id >>> 1]?.pad ?? 0;
++    const packed = id >= 22 ? unit.extraCooldowns4 ?? 0 : id >= 20 ? unit.extraCooldowns3 ?? 0 : id >= 18 ? unit.extraCooldowns2 ?? 0 : id >= 16 ? unit.extraCooldowns ?? 0 : unit.auras[id >>> 1]?.pad ?? 0;
+     const endsAt = ((packed >>> ((id & 1) * 16)) & 0xffff) * 100;
+     const remainingMs = Math.max(0, endsAt - now);
+     return {id, spell, remainingMs,
+diff --git a/src/effects.ts b/src/effects.ts
+index 1faf7d9..3a7ae52 100644
+--- a/src/effects.ts
++++ b/src/effects.ts
+@@ -22,6 +22,7 @@ export function visibleEffects(unit: EntityModel, now: number): VisibleEffect[]
+     effects.push({kind: fear ? 'fear' : 'stun', label: fear ? 'Feared' : stun ? 'Stunned' : 'Incapacitated',
+       detail: fear ? 'Fleeing uncontrollably · unable to act' : 'Unable to move or act', color: fear ? '#c084fc' : '#fbbf24', expiresAt: unit.stunEnd});
+   }
++  if ((unit.controlledStunEnd ?? 0) > now) effects.push({kind: 'stun', label: 'Stunned', detail: 'Unable to move or act', color: '#fbbf24', expiresAt: unit.controlledStunEnd!});
+   if ((unit.horrorEnd ?? 0) > now) effects.push({kind: 'horror', label: 'Horrified',
+     detail: 'Death Coil · fleeing uncontrollably · unable to act', color: '#a3e635', expiresAt: unit.horrorEnd!});
+   if (unit.silenceEnd > now) effects.push({kind: 'silence', label: 'Silenced',
+diff --git a/src/main.ts b/src/main.ts
+index c757517..5cebda5 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -2,7 +2,7 @@ import { SpellProjectiles, DrainLifeBeams } from './projectiles';
+ import { unitCooldowns } from './cooldowns';
+ import { visibleEffects } from './effects';
+ import { WebGPURHEASimulator } from './simulator';
+-import { SPELL_CATALOG, BENCHMARK_BATCH_SIZE, UNIT_RADIUS_YARDS } from './constants';
++import { SPELL_CATALOG, STANCE_CATALOG, BENCHMARK_BATCH_SIZE, UNIT_RADIUS_YARDS } from './constants';
+ 
+ const canvas = document.getElementById('arenaCanvas') as HTMLCanvasElement;
+ const ctx = canvas.getContext('2d')!;
+@@ -70,9 +70,11 @@ function updateSpellTooltip() {
+   const details = [effect, spell.selfHealRatio ? `Heals caster for ${spell.selfHealRatio * 100}% of damage dealt` : '', cc ? `${cc} · up to ${spell.ccDurationMs / 1000}s` : ''].filter(Boolean).join(' · ');
+   spellTooltip.innerHTML = `<strong>${spell.name}</strong>
+     <span class="spell-tooltip-status">${status}</span>
+-    <span>${spell.cost} ${({0: 'mana', 1: 'rage', 2: 'energy'} as Record<number, string>)[spell.powerType]} · ${spell.rangeYards} yd range</span>
++    <span>${spell.cost} ${({0: 'mana', 1: 'rage', 2: 'energy'} as Record<number, string>)[spell.powerType]} · ${spell.minRangeYards ? `${spell.minRangeYards}–` : ''}${spell.rangeYards} yd range</span>
+     <span>${spell.channelMs ? `${spell.channelMs / 1000}s channel` : spell.castTimeMs ? `${spell.castTimeMs / 1000}s cast` : 'Instant'} · ${spell.cooldownMs ? `${spell.cooldownMs / 1000}s cooldown` : 'No individual cooldown'}</span>
+     ${details ? `<span>${details}</span>` : ''}
++    ${spell.stanceMask ? `<span>Requires ${STANCE_CATALOG.filter(s => spell.stanceMask! & (1 << s.id)).map(s => s.name).join(' / ')}</span>` : ''}
++    ${spell.requiresOutOfCombat ? '<span>Requires out of combat</span>' : ''}
+     <small>${aura ? 'Active effect on this unit.' : 'Casting also requires resources, global cooldown, range and line of sight.'}</small>`;
+   spellTooltip.hidden = false;
+   const rect = spellTooltip.getBoundingClientRect();
+@@ -393,8 +395,8 @@ function renderUnitFrames() {
+     const targetEntity = sim.entities[u.targetId];
+     const targetDist = targetEntity ? Math.hypot(targetEntity.posX - u.posX, targetEntity.posY - u.posY).toFixed(1) : '0';
+     const eliteAct = sim.eliteActions[u.id];
+-    const desiredRange = eliteAct ? eliteAct.desiredRange : (u.powerType === 1 ? 0 : 30);
+-    const rangeStr = desiredRange <= 5 ? '⚔ Melee (0y)' : `🏹 Range (${desiredRange}y)`;
++    const desiredRange = eliteAct ? eliteAct.desiredRange : 0;
++    const rangeStr = desiredRange <= 5 ? `⚔ Range (${desiredRange}y)` : `🏹 Range (${desiredRange}y)`;
+     const spellName = eliteAct && eliteAct.spellId > 0 ? SPELL_CATALOG[eliteAct.spellId]?.name : 'Auto/Idle';
+ 
+     // Render active auras
+@@ -424,6 +426,7 @@ function renderUnitFrames() {
+         <div class="unit-info-text">
+           <span class="unit-name">${u.name} ${u.alive === 0 ? '(Dead)' : ''}</span>
+           <span class="unit-class-sub">${u.gearSummary}</span>
++          ${u.stanceMask ? `<span class="unit-class-sub" title="${Math.round(u.stanceRageRetention ?? 0)} Rage retained on switching · stance cooldown is independent of spell GCD">${STANCE_CATALOG[u.stance ?? 0]?.name}${(u.stanceReadyAt ?? 0) > sim.simTimeMs ? ` · switch ${(((u.stanceReadyAt ?? 0) - sim.simTimeMs) / 1000).toFixed(1)}s` : ''}${eliteAct?.stance ? ` → ${STANCE_CATALOG[eliteAct.stance]?.name}` : ''}</span>` : ''}
+         </div>
+       </div>
+       <div class="bar-container">
+@@ -439,8 +442,9 @@ function renderUnitFrames() {
+       <div class="unit-aura-slot">${aurasHtml}</div>
+       <div class="unit-abilities" aria-label="Ability cooldowns">${unitCooldowns(u, sim.simTimeMs).map(({spell, remainingMs, fraction}) => {
+         const cooling = remainingMs > 0;
+-        const label = cooling ? `${(remainingMs / 1000).toFixed(1)}s remaining` : 'Cooldown ready';
+-        return `<div class="ability-slot${cooling ? ' on-cooldown' : ''}${u.alive ? '' : ' inactive'}" tabindex="0"
++        const allowed = !spell.stanceMask || Boolean(spell.stanceMask & (1 << (u.stance ?? 0)));
++        const label = `${cooling ? `${(remainingMs / 1000).toFixed(1)}s remaining` : 'Cooldown ready'}${allowed ? '' : ' · requires different stance'}`;
++        return `<div class="ability-slot${cooling ? ' on-cooldown' : ''}${u.alive ? '' : ' inactive'}" tabindex="0" style="opacity: ${allowed ? 1 : 0.45}"
+           aria-label="${spell.name}: ${label}" data-spell-id="${spell.id}" data-unit-id="${u.id}" aria-describedby="spellTooltip">
+           <img src="${spell.icon}" alt="${spell.name}" />
+           ${cooling ? `<span class="cooldown-sweep" style="background: conic-gradient(rgba(8,12,24,.82) ${fraction * 360}deg, transparent 0deg)"></span>
+@@ -653,8 +657,11 @@ function render() {
+       d = { x: u.posX, y: u.posY };
+     } else {
+       const isAlive = u.alive === 1;
+-      const isStunned = Math.max(u.stunEnd, u.horrorEnd ?? 0) > sim.simTimeMs || u.auras.some(a => a.auraType === 8 && a.expiresAt > sim.simTimeMs);
+-      const isCasting = u.castSpellId > 0 && u.castEnd > sim.simTimeMs;
++      const isStunned = Math.max(u.stunEnd, u.horrorEnd ?? 0, u.controlledStunEnd ?? 0) > sim.simTimeMs || u.auras.some(a => a.auraType === 8 && a.expiresAt > sim.simTimeMs);
++      // Actual dash state blocks walking; a rejected planned dash still allows
++      // extrapolation toward the plan's chosen range, just as in the GPU engine.
++      const isDashing = (u.dashEnd ?? 0) > sim.simTimeMs;
++      const isCasting = u.castEnd > sim.simTimeMs;
+ 
+       let speedMult = 1.0;
+       if (u.auras) {
+@@ -682,13 +689,13 @@ function render() {
+       let dirX = 0;
+       let dirY = 0;
+ 
+-      if (isAlive && !isStunned && !isCasting && targetEntity && targetEntity.alive === 1 && speedMult > 0) {
++      if (isAlive && !isStunned && !isCasting && !isDashing && targetEntity && targetEntity.alive === 1 && speedMult > 0) {
+         const dx = targetEntity.posX - d.x;
+         const dy = targetEntity.posY - d.y;
+         const dist = Math.hypot(dx, dy);
+         if (dist > 0.1) {
+           const eliteAct = sim.eliteActions[u.id];
+-          const desiredRange = eliteAct ? eliteAct.desiredRange : (u.powerType === 1 ? 0 : 30);
++          const desiredRange = eliteAct ? eliteAct.desiredRange : 0;
+           let sign = 0;
+           if (dist > desiredRange + 1.0) {
+             sign = 1; // Advance
+@@ -707,7 +714,8 @@ function render() {
+       const toAuthX = u.posX - d.x;
+       const toAuthY = u.posY - d.y;
+       const distToAuth = Math.hypot(toAuthX, toAuthY);
+-      const nominalSpeed = (u.speed || 7.0) * speedMult * speedFactor;
++      const dashSpeed = isDashing ? Math.hypot((u.dashDestX ?? 0) - (u.dashOriginX ?? 0), (u.dashDestY ?? 0) - (u.dashOriginY ?? 0)) * 1000 / Math.max(1, (u.dashEnd ?? 0) - (u.dashStart ?? 0)) : 0;
++      const nominalSpeed = (dashSpeed || (u.speed || 7.0) * speedMult) * speedFactor;
+       const maxStep = nominalSpeed * frameDt;
+ 
+       if (!isAlive) {
+@@ -911,6 +919,10 @@ function render() {
+         ctx.lineWidth = 1;
+         ctx.strokeRect(hx, planY, badgeSize, badgeSize);
+ 
++        if (gene.stance) {
++          ctx.font = 'bold 7px sans-serif'; ctx.fillStyle = '#fbbf24';
++          ctx.fillText(['', 'B', 'D', 'Z'][gene.stance], hx + 2, planY + badgeSize + 8);
++        }
+         // Desired Range indicator badge: ⚔ for melee (<=5y), 🏹 for ranged (>5y)
+         if (gene.desiredRange <= 5) {
+           ctx.fillStyle = '#10b981';
+diff --git a/src/shaders/sim.wgsl.ts b/src/shaders/sim.wgsl.ts
+index bd30c94..723a908 100644
+--- a/src/shaders/sim.wgsl.ts
++++ b/src/shaders/sim.wgsl.ts
+@@ -29,6 +29,11 @@ struct SpellDef {
+     blink_distance: f32,
+     channel_ms: u32,
+     absorb_base: f32,
++    stance_mask: u32,
++    min_range_yards: f32,
++    requires_out_of_combat: u32,
++    power_gain: f32,
++    dash_speed: f32,
+ };
+ 
+ struct AuraSlot {
+@@ -84,6 +89,21 @@ struct EntityState {
+     extra_cooldowns3: u32,
+     polymorph_dr_count: u32,
+     polymorph_dr_reset_at: u32,
++    extra_cooldowns4: u32,
++    stance: u32,
++    stance_ready_at: u32,
++    stance_mask: u32,
++    stance_rage_retention: f32,
++    combat_until: u32,
++    dash_start: u32,
++    dash_end: u32,
++    dash_origin_x: f32,
++    dash_origin_y: f32,
++    dash_dest_x: f32,
++    dash_dest_y: f32,
++    controlled_stun_count: u32,
++    controlled_stun_reset_at: u32,
++    controlled_stun_end: u32,
+     auras: array<AuraSlot, 8>,
+ };
+ 
+@@ -147,6 +167,9 @@ fn record_event(enabled: bool, at: u32, source: u32, recipient: u32, spell: u32,
+ @group(0) @binding(13) var<storage, read> committedPlan: array<u32>;
+ @group(0) @binding(14) var<storage, read> committedOrigin: array<u32, 8>;
+ 
++// Uniform table: damage dealt, damage taken, melee crit bonus, reserved.
++@group(0) @binding(15) var<uniform> stanceCatalog: array<vec4<f32>, 4>;
++
+ struct CombatResult { state: ArenaState, queue: SimQueue, damage0: f32, damage1: f32, };
+ 
+ // Reduction kernel: Find max fitness candidates for both Team 0 and Team 1 purely on GPU
+@@ -217,12 +240,13 @@ fn rand_float(state: ptr<function, u32>) -> f32 {
+ }
+ 
+ // Per-spell cooldown tracking (in units of 100ms, max 6.5s..6553.5s) packed into u32 words:
+-// Spells 0..15 use two u16 timestamps per aura pad; spell 16 uses extra_cooldowns.
++// Spells 0..15 use aura pads; 16..23 use four extra packed words.
+ fn get_spell_cd_end(unit: EntityState, spell_id: u32) -> u32 {
+     if (spell_id == 0u || spell_id >= arrayLength(&spellCatalog)) { return 0u; }
+     if (spell_id >= 16u) {
+         var packed = unit.extra_cooldowns;
+-        if (spell_id >= 20u) { packed = unit.extra_cooldowns3; }
++        if (spell_id >= 22u) { packed = unit.extra_cooldowns4; }
++        else if (spell_id >= 20u) { packed = unit.extra_cooldowns3; }
+         else if (spell_id >= 18u) { packed = unit.extra_cooldowns2; }
+         return ((packed >> ((spell_id & 1u) * 16u)) & 0xFFFFu) * 100u;
+     }
+@@ -238,7 +262,8 @@ fn set_spell_cd_end(unit: ptr<function, EntityState>, spell_id: u32, cd_end_ms:
+         let shift = (spell_id & 1u) * 16u;
+         let mask = ~(0xFFFFu << shift);
+         let value = min(65535u, (cd_end_ms + 99u) / 100u) << shift;
+-        if (spell_id >= 20u) { (*unit).extra_cooldowns3 = ((*unit).extra_cooldowns3 & mask) | value; }
++        if (spell_id >= 22u) { (*unit).extra_cooldowns4 = ((*unit).extra_cooldowns4 & mask) | value; }
++        else if (spell_id >= 20u) { (*unit).extra_cooldowns3 = ((*unit).extra_cooldowns3 & mask) | value; }
+         else if (spell_id >= 18u) { (*unit).extra_cooldowns2 = ((*unit).extra_cooldowns2 & mask) | value; }
+         else { (*unit).extra_cooldowns = ((*unit).extra_cooldowns & mask) | value; }
+         return;
+@@ -313,7 +338,7 @@ fn get_healing_received_multiplier(input_unit: EntityState, now: u32) -> f32 {
+ 
+ fn get_damage_reduction_multiplier(input_unit: EntityState, now: u32) -> f32 {
+     var unit = input_unit;
+-    var mult = 1.0;
++    var mult = stanceCatalog[min(unit.stance, 3u)].y;
+     for (var i = 0u; i < 8u; i = i + 1u) {
+         // Shield Wall (-60% damage taken)
+         if ((unit.auras[i].aura_type & 0xFFu) == 2u && unit.auras[i].expires_at > now) {
+@@ -360,8 +385,8 @@ fn absorb_damage(unit: ptr<function, EntityState>, raw_dmg: f32, now: u32) -> f3
+ }
+ 
+ // Universal Diminishing Returns helper for CC durations
+-// Stun & Fear DR curve: 1st: 100%, 2nd: 50%, 3rd: 25%, 4th+: Immune (0%)
+-// DR resets after 15,000ms of no stuns/fears applied
++// Controlled stun and Fear use independent DR counters; curve: 1st: 100%, 2nd: 50%, 3rd: 25%, 4th+: Immune (0%)
++// Each DR category resets 15,000ms after the last applied effect ends.
+ fn apply_cc(recipient: ptr<function, EntityState>, cc_type: u32, base_duration_ms: u32, now: u32) -> bool {
+     let before = *recipient;
+     if (cc_type == 7u) {
+@@ -374,7 +399,17 @@ fn apply_cc(recipient: ptr<function, EntityState>, cc_type: u32, base_duration_m
+             (*recipient).cast_end = now;
+             (*recipient).cast_spell_id = 0u;
+         }
+-    } else if (cc_type == 1u || cc_type == 4u) { // Stun (1) or Fear (4) incapacitate with DR
++    } else if (cc_type == 1u) {
++        if (now >= (*recipient).controlled_stun_reset_at) { (*recipient).controlled_stun_count = 0u; }
++        if ((*recipient).controlled_stun_count < 3u) {
++            let duration = base_duration_ms >> (*recipient).controlled_stun_count;
++            (*recipient).controlled_stun_count += 1u;
++            (*recipient).controlled_stun_end = max((*recipient).controlled_stun_end, now + duration);
++            (*recipient).controlled_stun_reset_at = now + duration + 15000u;
++            (*recipient).cast_end = now;
++            (*recipient).cast_spell_id = 0u;
++        }
++    } else if (cc_type == 4u) { // Stun (1) or Fear (4) incapacitate with DR
+         // Reset DR if reset window elapsed
+         if (now >= (*recipient).dr_stun_reset_at) {
+             (*recipient).dr_stun_count = 0u;
+@@ -430,7 +465,8 @@ fn apply_cc(recipient: ptr<function, EntityState>, cc_type: u32, base_duration_m
+         // Handled via aura_type == 6 (speed = 0)
+         return true;
+     }
+-    return (*recipient).stun_end != before.stun_end ||
++    return (*recipient).controlled_stun_end != before.controlled_stun_end ||
++        (*recipient).stun_end != before.stun_end ||
+         (*recipient).silence_end != before.silence_end ||
+         (*recipient).horror_end != before.horror_end ||
+         (*recipient).polymorph_dr_count != before.polymorph_dr_count;
+@@ -461,13 +497,35 @@ fn break_cc_on_damage(recipient: ptr<function, EntityState>, dmg: f32, now: u32)
+ }
+ 
+ fn incapacitated_until(unit: EntityState) -> u32 {
+-    var until = max(unit.stun_end, unit.horror_end);
++    var until = max(max(unit.stun_end, unit.horror_end), unit.controlled_stun_end);
+     for (var i = 0u; i < 8u; i++) {
+         if ((unit.auras[i].aura_type & 0xFFu) == 8u) { until = max(until, unit.auras[i].expires_at); }
+     }
+     return until;
+ }
+ 
++fn change_stance(unit: ptr<function, EntityState>, requested: u32, now: u32) -> bool {
++    if (requested == 0u || requested > 3u || requested == (*unit).stance ||
++        (((*unit).stance_mask >> requested) & 1u) == 0u || now < (*unit).stance_ready_at ||
++        now < incapacitated_until(*unit) || now < (*unit).cast_end || now < (*unit).dash_end) { return false; }
++    (*unit).stance = requested;
++    (*unit).stance_ready_at = now + 1000u;
++    (*unit).power = min((*unit).power, (*unit).stance_rage_retention);
++    return true;
++}
++
++fn stance_allows(unit: EntityState, spell: SpellDef) -> bool {
++    return spell.stance_mask == 0u || ((spell.stance_mask >> unit.stance) & 1u) == 1u;
++}
++
++// Deterministic event RNG is independent of candidate mutation and commit size.
++// Crit chance already exists in every entity; stance adds a data-driven bonus.
++fn melee_crit_multiplier(unit: EntityState, recipient_id: u32, spell: u32, now: u32) -> f32 {
++    var seed = (unit.id + 1u) * 747796405u ^ (recipient_id + 1u) * 2891336453u ^ (spell + 1u) * 277803737u ^ (now + 1u) * 1597334677u;
++    let chance = clamp(unit.crit_chance + stanceCatalog[min(unit.stance, 3u)].z, 0.0, 1.0);
++    return select(1.0, 2.0, rand_float(&seed) < chance);
++}
++
+ // Data-driven 2D Pillar Line-of-Sight & Circle Collision helpers (reads ArenaState.pillars[0..3])
+ fn has_line_of_sight(pillars: array<ArenaPillar, 4>, ax: f32, ay: f32, bx: f32, by: f32) -> bool {
+     let abx = bx - ax;
+@@ -508,6 +566,43 @@ fn resolve_pillar_collision(pillars: array<ArenaPillar, 4>, x: f32, y: f32) -> v
+     return vec2<f32>(px, py);
+ }
+ 
++fn dash_path_clear(pillars: array<ArenaPillar, 4>, origin: vec2<f32>, destination: vec2<f32>) -> bool {
++    let segment = destination - origin;
++    let length_sq = max(dot(segment, segment), 0.0001);
++    if (any(destination < vec2<f32>(2.0)) || any(destination > vec2<f32>(58.0, 38.0))) { return false; }
++    for (var p = 0u; p < 4u; p++) {
++        if (pillars[p].r <= 0.0) { continue; }
++        let center = vec2<f32>(pillars[p].x, pillars[p].y);
++        let t = clamp(dot(center - origin, segment) / length_sq, 0.0, 1.0);
++        let distance_sq = dot(origin + segment * t - center, origin + segment * t - center);
++        let radius = pillars[p].r + 1.5;
++        if (distance_sq < radius * radius) { return false; }
++    }
++    return true;
++}
++
++// Only active dashes run this bounded update. pad0 bit 0 = initialized,
++// bits 1..6 = active dash entity mask; no extra per-dash event chain.
++fn update_dashes(state: ptr<function, ArenaState>, now: u32) {
++    if (((*state).pad0 >> 1u) == 0u) { return; }
++    for (var u = 0u; u < 6u; u++) {
++        if (((*state).pad0 & (2u << u)) == 0u) { continue; }
++        var unit = (*state).entities[u];
++        // State was advanced to the CC event before the effect was applied.
++        // Cancellation therefore holds the last authoritative position.
++        if (unit.alive == 0u || incapacitated_until(unit) > now || get_speed_multiplier(unit, now) == 0.0) {
++            unit.dash_end = now;
++            (*state).pad0 &= ~(2u << u);
++        } else {
++            let t = clamp(f32(now - min(now, unit.dash_start)) / f32(max(1u, unit.dash_end - unit.dash_start)), 0.0, 1.0);
++            unit.pos_x = mix(unit.dash_origin_x, unit.dash_dest_x, t);
++            unit.pos_y = mix(unit.dash_origin_y, unit.dash_dest_y, t);
++            if (now >= unit.dash_end) { (*state).pad0 &= ~(2u << u); }
++        }
++        (*state).entities[u] = unit;
++    }
++}
++
+ // Forced movement is a CC mechanic, not planner behavior. No shared mutation RNG:
+ // direction is fixed by unit and absolute time so live/predicted commits agree.
+ fn is_fleeing(unit: EntityState, now: u32) -> bool {
+@@ -643,6 +738,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+         if (queue.size == 0u) { break; }
+         if (queue.events[0].at > max_time_ms) { break; }
+         let ev = dequeue(&queue);
++        update_dashes(&state, ev.at);
+         state.now = ev.at;
+         // Temporal discount factor (1.0 at t=start_now down to 0.70 at +10s) so RHEA prioritizes
+         // immediate pressure and fast kills over delayed actions.
+@@ -671,13 +767,15 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                     // Mana casters only have melee staff/fist attack at 5y dealing minimal physical damage
+                     let range_limit = 5.0;
+ 
+-                    if (dist <= range_limit) {
++                    if (dist <= range_limit && state.entities[src].dash_end <= state.now) {
++                        state.entities[src].combat_until = state.now + 5000u;
++                        state.entities[tgt].combat_until = state.now + 5000u;
+                         var base_dmg = state.entities[src].attack_power * 0.35 + 40.0;
+                         if (state.entities[src].power_type != 1u) {
+                             base_dmg = 15.0; // Casters deal negligible 15 physical damage staff bonk
+                         }
+                         let armor_factor = 1000.0 / (1000.0 + state.entities[tgt].armor);
+-                        let raw_dmg = base_dmg * armor_factor * get_damage_reduction_multiplier(state.entities[tgt], state.now);
++                        let raw_dmg = base_dmg * armor_factor * stanceCatalog[min(state.entities[src].stance, 3u)].x * melee_crit_multiplier(state.entities[src], tgt, 0u, state.now) * get_damage_reduction_multiplier(state.entities[tgt], state.now);
+                         // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
+                         var effect_entity_1 = state.entities[tgt];
+                         let final_dmg = absorb_damage(&effect_entity_1, raw_dmg, state.now);
+@@ -721,6 +819,8 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+ 
+                     if (state.entities[tgt].alive == 1u && state.entities[src].power >= spell.cost && in_range && in_los) {
+                         state.entities[src].power -= spell.cost;
++                        if (spell.is_heal == 0u) { state.entities[src].combat_until = state.now + 5000u; state.entities[tgt].combat_until = state.now + 5000u; }
++                        else if (state.entities[tgt].combat_until > state.now) { state.entities[src].combat_until = state.now + 5000u; }
+                         var cd_entity_cast = state.entities[src];
+                         if (spell.cooldown_ms > 0u) {
+                             set_spell_cd_end(&cd_entity_cast, ev.spell_id, state.now + spell.cooldown_ms);
+@@ -741,7 +841,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                             }
+                         } else if (spell.is_heal == 0u) {
+                             let dmg_red = get_damage_reduction_multiplier(state.entities[tgt], state.now);
+-                            let raw_dmg = (spell.base_dmg_min + select(spell.scaling, 0.0, spell.is_dot == 1u) * state.entities[src].spell_power) * dmg_red;
++                            let raw_dmg = (spell.base_dmg_min + select(spell.scaling, 0.0, spell.is_dot == 1u) * state.entities[src].spell_power) * dmg_red * stanceCatalog[min(state.entities[src].stance, 3u)].x;
+                             // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
+                             var effect_entity_2 = state.entities[tgt];
+                             let final_dmg = absorb_damage(&effect_entity_2, raw_dmg, state.now);
+@@ -838,6 +938,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                     if (active_slot < 8u) {
+                         if (spell.is_heal == 1u && spell.aura_type != 3u) {
+                             let heal_mult = get_healing_received_multiplier(state.entities[tgt], state.now);
++                            if (state.entities[tgt].combat_until > state.now) { state.entities[src].combat_until = state.now + 5000u; }
+                             let tick_heal = (spell.dot_dmg_per_tick + spell.scaling * state.entities[src].spell_power * 0.2) * heal_mult;
+                             let old_hp = state.entities[tgt].hp;
+                             state.entities[tgt].hp = min(state.entities[tgt].max_hp, old_hp + tick_heal);
+@@ -850,7 +951,9 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                             }
+                         } else if (spell.is_heal == 0u) {
+                             let dmg_red = get_damage_reduction_multiplier(state.entities[tgt], state.now);
+-                            let raw_dmg = (spell.dot_dmg_per_tick + spell.scaling * state.entities[src].spell_power * 0.2) * dmg_red;
++                            let raw_dmg = (spell.dot_dmg_per_tick + spell.scaling * state.entities[src].spell_power * 0.2) * dmg_red * stanceCatalog[min(state.entities[src].stance, 3u)].x;
++                            state.entities[src].combat_until = state.now + 5000u;
++                            state.entities[tgt].combat_until = state.now + 5000u;
+                             // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
+                             var effect_entity_5 = state.entities[tgt];
+                             let tick_dmg = absorb_damage(&effect_entity_5, raw_dmg, state.now);
+@@ -897,7 +1000,12 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                     if (!owns_spell(state.entities[src], spell_id)) { spell_id = 0u; }
+                     let desired_range_u = (raw_gene >> 8u) & 0xFFu;
+                     let desired_range = f32(desired_range_u);
+-                    var chosen_target = (raw_gene >> 16u) & 0xFFFFu;
++                    var chosen_target = (raw_gene >> 16u) & 0xFFu;
++                    var stance_unit = state.entities[src];
++                    if (change_stance(&stance_unit, (raw_gene >> 24u) & 3u, state.now)) {
++                        record_event(logging, state.now, src, src, stance_unit.stance, 7u, stance_unit.power);
++                    }
++                    state.entities[src] = stance_unit;
+ 
+                     // Resolve spell relationship before execution; beneficial spells cannot hit enemies.
+                     let friendly_spell = spell_id > 0u && spellCatalog[spell_id].is_heal == 1u;
+@@ -934,12 +1042,33 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+ 
+                     let is_stunned = state.now < incapacitated_until(state.entities[src]);
+                     var may_cast = !is_stunned;
+-                    if (spell_id > 0u && spellCatalog[spell_id].blink_distance > 0.0 && state.entities[src].incapacitate_type == 1u) {
+-                        var unstunned = state.entities[src]; unstunned.stun_end = state.now;
++                    if (spell_id > 0u && spellCatalog[spell_id].blink_distance > 0.0) {
++                        var unstunned = state.entities[src]; unstunned.controlled_stun_end = state.now;
++                        if (unstunned.incapacitate_type == 1u) { unstunned.stun_end = state.now; }
+                         may_cast = incapacitated_until(unstunned) <= state.now;
+                     }
+                     let is_silenced = state.now < state.entities[src].silence_end;
+-                    let is_casting = state.entities[src].cast_spell_id > 0u && state.entities[src].cast_end > state.now;
++                    let is_casting = state.entities[src].cast_end > state.now || state.entities[src].dash_end > state.now;
++
++                    let action_ready = spell_id > 0u && is_spell_valid(state.entities[src], spell_id) && stance_allows(state.entities[src], spellCatalog[spell_id]) && !is_casting && may_cast && (!is_silenced || spellCatalog[spell_id].power_type == 1u) && state.now >= state.entities[src].gcd_end && state.now >= get_spell_cd_end(state.entities[src], spell_id);
++                    let is_dash = spell_id > 0u && spellCatalog[spell_id].dash_speed > 0.0;
++                    var dash_ready = false;
++                    var dash_destination = vec2<f32>(0.0);
++                    // Validate a dash at the decision's starting position. Only a
++                    // successful activation replaces the independent range intent.
++                    // Walking must not turn a rejected dash into a valid cast in
++                    // this same decision by crossing its minimum/maximum range.
++                    if (is_dash && action_ready) {
++                        let spell = spellCatalog[spell_id];
++                        let origin = vec2<f32>(state.entities[src].pos_x, state.entities[src].pos_y);
++                        let recipient = vec2<f32>(state.entities[active_tgt].pos_x, state.entities[active_tgt].pos_y);
++                        let delta = recipient - origin;
++                        let dist = length(delta);
++                        if (active_tgt != src && state.entities[active_tgt].alive == 1u && dist >= spell.min_range_yards && dist <= spell.range_yards && (spell.requires_out_of_combat == 0u || state.entities[src].combat_until <= state.now) && get_speed_multiplier(state.entities[src], state.now) > 0.0) {
++                            dash_destination = recipient - delta / max(dist, 0.001) * 3.0;
++                            dash_ready = has_line_of_sight(state.pillars, origin.x, origin.y, recipient.x, recipient.y) && dash_path_clear(state.pillars, origin, dash_destination);
++                        }
++                    }
+ 
+                     // Online Learned Spatial Intent Execution:
+                     // Unit smoothly tracks desired engagement distance relative to its enemy target
+@@ -954,7 +1083,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                             }
+                         }
+                     }
+-                    if (!is_stunned && !is_casting && move_ref_tgt < num_units && state.entities[move_ref_tgt].alive == 1u) {
++                    if (!is_stunned && !is_casting && !dash_ready && move_ref_tgt < num_units && state.entities[move_ref_tgt].alive == 1u) {
+                         let dx = state.entities[move_ref_tgt].pos_x - state.entities[src].pos_x;
+                         let dy = state.entities[move_ref_tgt].pos_y - state.entities[src].pos_y;
+                         let dist = sqrt(dx * dx + dy * dy);
+@@ -985,7 +1114,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                         }
+                     }
+ 
+-                    if (spell_id > 0u && is_spell_valid(state.entities[src], spell_id) && may_cast && (!is_silenced || spellCatalog[spell_id].power_type == 1u) && state.now >= state.entities[src].gcd_end && state.now >= state.entities[src].cast_end && state.now >= get_spell_cd_end(state.entities[src], spell_id)) {
++                    if (action_ready && (!is_dash || dash_ready)) {
+                         let spell = spellCatalog[spell_id];
+                         let cost = spell.cost;
+                         
+@@ -993,9 +1122,10 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                         let dx = state.entities[active_tgt].pos_x - state.entities[src].pos_x;
+                         let dy = state.entities[active_tgt].pos_y - state.entities[src].pos_y;
+                         let dist = sqrt(dx * dx + dy * dy);
+-                        let in_los = spell.blink_distance > 0.0 || active_tgt == src || has_line_of_sight(state.pillars, state.entities[src].pos_x, state.entities[src].pos_y, state.entities[active_tgt].pos_x, state.entities[active_tgt].pos_y);
++                        let in_los = dash_ready || spell.blink_distance > 0.0 || active_tgt == src || has_line_of_sight(state.pillars, state.entities[src].pos_x, state.entities[src].pos_y, state.entities[active_tgt].pos_x, state.entities[active_tgt].pos_y);
+ 
+-                        if (state.entities[src].power >= cost && (active_tgt == src || dist <= spell.range_yards) && in_los) {
++                        let combat_allowed = spell.requires_out_of_combat == 0u || state.entities[src].combat_until <= state.now;
++                        if (state.entities[active_tgt].alive == 1u && combat_allowed && state.entities[src].power >= cost && (active_tgt == src || (dist <= spell.range_yards && dist >= spell.min_range_yards)) && in_los) {
+                             // Universal GCD: 1500ms
+                             state.entities[src].gcd_end = state.now + 1500u;
+ 
+@@ -1007,7 +1137,20 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                                 enqueue(&queue, Event(state.entities[src].cast_end, 2u, src, active_tgt, spell_id, 0u));
+                             } else {
+                                 // Instant cast execution: deduct cost and record per-spell cooldown immediately
+-                                state.entities[src].power -= cost;
++                                state.entities[src].power = min(state.entities[src].max_power, state.entities[src].power - cost + spell.power_gain);
++                                if (spell.is_heal == 0u) { state.entities[src].combat_until = state.now + 5000u; state.entities[active_tgt].combat_until = state.now + 5000u; }
++                                else if (state.entities[active_tgt].combat_until > state.now) { state.entities[src].combat_until = state.now + 5000u; }
++                                if (spell.dash_speed > 0.0) {
++                                    state.entities[src].dash_start = state.now;
++                                    state.entities[src].dash_end = state.now + u32(ceil(max(0.0, dist - 3.0) / spell.dash_speed * 1000.0));
++                                    state.entities[src].dash_origin_x = state.entities[src].pos_x;
++                                    state.entities[src].dash_origin_y = state.entities[src].pos_y;
++                                    state.entities[src].dash_dest_x = dash_destination.x;
++                                    state.entities[src].dash_dest_y = dash_destination.y;
++                                    state.pad0 |= 2u << src;
++                                    enqueue(&queue, Event(state.entities[src].dash_end, 8u, src, active_tgt, spell_id, 0u));
++                                    record_event(logging, state.now, src, active_tgt, spell_id, 6u, 0.0);
++                                }
+                                 if (spell.cooldown_ms > 0u) {
+                                     var cd_entity_inst = state.entities[src];
+                                     set_spell_cd_end(&cd_entity_inst, spell_id, state.now + spell.cooldown_ms);
+@@ -1030,7 +1173,9 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                                     let armor_mul = select(1.0, 1000.0 / (1000.0 + state.entities[active_tgt].armor), spell.power_type == 1u);
+                                     let dmg_red = get_damage_reduction_multiplier(state.entities[active_tgt], state.now);
+                                     let power_stat = select(state.entities[src].spell_power, state.entities[src].attack_power, spell.power_type == 1u);
+-                                    let raw_dmg = (spell.base_dmg_min + select(spell.scaling, 0.0, spell.is_dot == 1u) * power_stat) * armor_mul * dmg_red;
++                                    var crit = 1.0;
++                                    if (spell.power_type == 1u && spell.is_dot == 0u) { crit = melee_crit_multiplier(state.entities[src], active_tgt, spell_id, state.now); }
++                                    let raw_dmg = (spell.base_dmg_min + select(spell.scaling, 0.0, spell.is_dot == 1u) * power_stat) * armor_mul * dmg_red * stanceCatalog[min(state.entities[src].stance, 3u)].x * crit;
+                                     // Use a local pointer: Naga SPIR-V emission crashes on dynamic array-element pointer arguments.
+                                     var effect_entity_6 = state.entities[active_tgt];
+                                     let final_dmg = absorb_damage(&effect_entity_6, raw_dmg, state.now);
+@@ -1089,6 +1234,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                                         if ((mover.auras[a].aura_type & 0xFFu) == 6u) { mover.auras[a].expires_at = state.now; }
+                                     }
+                                     if (mover.incapacitate_type == 1u) { mover.stun_end = state.now; }
++                                    mover.controlled_stun_end = state.now;
+                                     let length = max(0.001, dist);
+                                     let direction = vec2<f32>(dx, dy) / length * select(1.0, -1.0, desired_range > dist);
+                                     var position = vec2<f32>(mover.pos_x, mover.pos_y);
+@@ -1126,12 +1272,18 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                     }
+ 
+                     // Schedule next decision: at least 500ms into the future, or after active GCD / cast / stun
+-                    let busy_end = max(max(state.entities[src].gcd_end, state.entities[src].cast_end), incapacitated_until(state.entities[src]));
++                    let mandatory_busy = max(max(state.entities[src].cast_end, state.entities[src].dash_end), incapacitated_until(state.entities[src]));
++                    var busy_end = max(state.entities[src].gcd_end, mandatory_busy);
++                    let next_stance = (plan[src * 8u + min(step + 1u, horizon - 1u)] >> 24u) & 3u;
++                    if (next_stance != 0u && next_stance != state.entities[src].stance && ((state.entities[src].stance_mask >> next_stance) & 1u) == 1u) {
++                        busy_end = max(mandatory_busy, min(busy_end, state.entities[src].stance_ready_at));
++                    }
+                     let next_decision = max(state.now + 500u, busy_end + 50u);
+                     enqueue(&queue, Event(next_decision, 5u, src, active_tgt, 0u, 0u));
+                 }
+             }
+ 
++            case 8u: { /* Dash arrival: update_dashes has advanced the position. */ }
+             case 7u: { // Polymorph regeneration follows its own aura generation.
+                 for (var a = 0u; a < 8u; a++) {
+                     let aura = state.entities[src].auras[a];
+@@ -1153,7 +1305,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+                 if (state.entities[src].next_flee_at != state.now) { continue; }
+                 state.entities[src].next_flee_at = 0u;
+                 if (is_fleeing(state.entities[src], state.now)) {
+-                    var hard_stun = state.entities[src].stun_end > state.now && state.entities[src].incapacitate_type == 1u;
++                    var hard_stun = state.entities[src].controlled_stun_end > state.now || (state.entities[src].stun_end > state.now && state.entities[src].incapacitate_type == 1u);
+                     for (var a = 0u; a < 8u; a++) {
+                         if ((state.entities[src].auras[a].aura_type & 0xFFu) == 8u && state.entities[src].auras[a].expires_at > state.now) { hard_stun = true; }
+                     }
+@@ -1173,6 +1325,9 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+ 
+             default: {}
+         }
++        // Cancel a dash immediately when this event applies a root or CC, even
++        // if that short effect expires before the next queued event.
++        update_dashes(&state, state.now);
+         for (var u = 0u; u < num_units; u++) {
+             if (was_alive[u] == 1u && state.entities[u].alive == 0u) {
+                 record_event(logging, state.now, src, u, ev.spell_id, 5u, 0.0);
+@@ -1185,7 +1340,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
+     var pending_due = false;
+     if (queue.size > 0u) { pending_due = queue.events[0].at <= max_time_ms; }
+     if (pending_due) { state.pad1 = 1u; }
+-    else { state.now = max_time_ms; }
++    else { update_dashes(&state, max_time_ms); state.now = max_time_ms; }
+     return CombatResult(state, queue, damage_team0, damage_team1);
+ }
+ 
+@@ -1325,17 +1480,24 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
+             // Dynamic Mutation Rate: higher exploration (45%) on unassigned/idle genes to rapidly discover active abilities
+             let current_gene = bestPlan[u * horizon + h];
+             let current_spell = current_gene & 0xFFu;
++            var chosen_stance = (current_gene >> 24u) & 3u;
++            if (unit.stance_mask != 0u && rand_float(&rng) < 0.30) {
++                let request = xorshift32(&rng) & 3u;
++                if (request == 0u || ((unit.stance_mask >> request) & 1u) == 1u) { chosen_stance = request; }
++            }
++            var prepared_unit = unit;
++            let switched = change_stance(&prepared_unit, chosen_stance, now);
+             let mut_rate = select(0.30, 0.50, current_spell == 0u);
+ 
+             if (rand_float(&rng) < mut_rate) {
+-                // Pick random spell across 16 abilities; rejection sample up to 8 times to find a valid active spell.
++                // Pick random spell from the bound catalog; rejection sample up to 8 times to find a valid active spell.
+                 // At h == 0, require current snapshot resource affordability AND off-cooldown; at future steps (h > 0),
+                 // allow any class-owned spell so RHEA can plan spenders after future rage/mana generation and cooldown expiry.
+                 var chosen_spell = 0u;
+                 for (var trial = 0u; trial < 8u; trial = trial + 1u) {
+                     // Bias slightly away from 0 (idle) during mutation so units actively test abilities
+                     let cand_spell = (xorshift32(&rng) % (arrayLength(&spellCatalog) - 1u)) + 1u;
+-                    let valid_h0 = is_spell_valid(unit, cand_spell) && now >= get_spell_cd_end(unit, cand_spell);
++                    let valid_h0 = is_spell_valid(prepared_unit, cand_spell) && stance_allows(prepared_unit, spellCatalog[cand_spell]) && now >= get_spell_cd_end(prepared_unit, cand_spell);
+                     let valid = select(owns_spell(unit, cand_spell), valid_h0, h == 0u);
+                     if (valid) {
+                         chosen_spell = cand_spell;
+@@ -1346,7 +1508,7 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
+                 // If no valid active spell found, 10% chance to stay idle, otherwise retry once
+                 if (chosen_spell == 0u && rand_float(&rng) > 0.10) {
+                     let cand_spell = xorshift32(&rng) % arrayLength(&spellCatalog);
+-                    let valid_h0 = is_spell_valid(unit, cand_spell) && now >= get_spell_cd_end(unit, cand_spell);
++                    let valid_h0 = is_spell_valid(prepared_unit, cand_spell) && stance_allows(prepared_unit, spellCatalog[cand_spell]) && now >= get_spell_cd_end(prepared_unit, cand_spell);
+                     let valid = select(owns_spell(unit, cand_spell), valid_h0, h == 0u);
+                     if (valid) {
+                         chosen_spell = cand_spell;
+@@ -1372,29 +1534,13 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
+                     }
+                 }
+ 
+-                // Online Learned Spatial Intent Search:
+-                // Mutates desired engagement distance:
+-                // Melee units (rage users) desire 0y (point blank)
+-                // Mana casters / healers search optimal combat spacing among [5y, 15y, 25y, 30y]
+-                // so short-range CC (Psychic Scream 8y, Frost Nova 10y) and kiting can both emerge.
+-                var chosen_range = 0u;
+-                if (unit.power_type != 1u) {
+-                    let range_pick = xorshift32(&rng) % 4u;
+-                    if (range_pick == 0u) {
+-                        chosen_range = 5u;
+-                    } else if (range_pick == 1u) {
+-                        chosen_range = 15u;
+-                    } else if (range_pick == 2u) {
+-                        chosen_range = 25u;
+-                    } else {
+-                        chosen_range = 30u;
+-                    }
+-                }
++                // Every entity searches the same arena-scale distance space.
++                let chosen_range = xorshift32(&rng) % 73u;
+ 
+-                // Pack tri-gene: bits 0..7 = spell_id, bits 8..15 = desired_range, bits 16..31 = target_id
+-                candidatePlans[offset] = (chosen_spell & 0xFFu) | ((chosen_range & 0xFFu) << 8u) | ((chosen_target & 0xFFFFu) << 16u);
++                // bits 0..7 spell, 8..15 range, 16..23 target, 24..25 stance request
++                candidatePlans[offset] = (chosen_spell & 0xFFu) | ((chosen_range & 0xFFu) << 8u) | ((chosen_target & 0xFFu) << 16u) | (chosen_stance << 24u);
+             } else {
+-                candidatePlans[offset] = bestPlan[u * horizon + h];
++                candidatePlans[offset] = (current_gene & 0xFCFFFFFFu) | (chosen_stance << 24u);
+             }
+         }
+     }
+diff --git a/src/simulator.ts b/src/simulator.ts
+index d71732a..e41853d 100644
+--- a/src/simulator.ts
++++ b/src/simulator.ts
+@@ -10,8 +10,12 @@ import {
+   BENCHMARK_BATCH_SIZE,
+   WORKGROUP_SIZE,
+   SPELL_CATALOG,
+-  SPELL_WORDS,
+-  MAX_SPELLS,
++  packSpellCatalog,
++  packStanceCatalog,
++  STANCE_CATALOG,
++  FOREVER_BASE_RAGE_RETENTION,
++  unpackAction,
++  packAction,
+   POWER_TYPE_RAGE,
+   POWER_TYPE_MANA,
+   ARENA_HEADER_WORDS,
+@@ -33,7 +37,8 @@ import {
+ export interface ActionGene {
+   spellId: number;
+   targetId: number;
+-  desiredRange: number; // 0: melee range (<=5y), 15: mid range, 30: max caster range
++  desiredRange: number;
++  stance?: number; // independent request: 0 keep, 1 Battle, 2 Defensive, 3 Berserker
+ }
+ 
+ export interface LiveAura {
+@@ -79,6 +84,21 @@ export interface EntityModel {
+   extraCooldowns?: number;
+   extraCooldowns2?: number;
+   extraCooldowns3?: number;
++  extraCooldowns4?: number;
++  stance?: number;
++  stanceReadyAt?: number;
++  stanceMask?: number;
++  stanceRageRetention?: number;
++  combatUntil?: number;
++  dashStart?: number;
++  dashEnd?: number;
++  dashOriginX?: number;
++  dashOriginY?: number;
++  dashDestX?: number;
++  dashDestY?: number;
++  controlledStunCount?: number;
++  controlledStunResetAt?: number;
++  controlledStunEnd?: number;
+   polymorphDrCount?: number;
+   polymorphDrResetAt?: number;
+   horrorEnd?: number;
+@@ -98,6 +118,7 @@ export class WebGPURHEASimulator {
+   public device!: GPUDevice;
+   public supportsSubgroups: boolean = false;
+   private spellCatalogBuffer!: GPUBuffer;
++  private stanceCatalogBuffer!: GPUBuffer;
+   private liveStateBuffer!: GPUBuffer;
+   private candidatePlansBuffer!: GPUBuffer;
+   private candidateFitnessBuffer!: GPUBuffer;
+@@ -179,14 +200,7 @@ export class WebGPURHEASimulator {
+     await this.requestSnapshot();
+   }
+ 
+-  public eliteActions: ActionGene[] = [
+-    { spellId: 0, targetId: 2, desiredRange: 0 },
+-    { spellId: 0, targetId: 0, desiredRange: 20 },
+-    { spellId: 0, targetId: 0, desiredRange: 30 },
+-    { spellId: 0, targetId: 0, desiredRange: 30 },
+-    { spellId: 0, targetId: 0, desiredRange: 0 },
+-    { spellId: 0, targetId: 0, desiredRange: 0 }
+-  ];
++  public eliteActions: ActionGene[] = Array.from({length: MAX_ENTITIES}, () => ({spellId: 0, targetId: 0, desiredRange: 0, stance: 0}));
+   public elitePlanHorizon: ActionGene[][] = [[], [], [], [], [], []];
+ 
+   private mutatePipeline!: GPUComputePipeline;
+@@ -281,13 +295,14 @@ export class WebGPURHEASimulator {
+         id: 0,
+         name: "Warrior",
+         className: "Warrior",
++        stance: 1, stanceMask: 14, stanceRageRetention: FOREVER_BASE_RAGE_RETENTION,
+         icon: "/icons/class_warrior.png",
+         team: 0,
+         alive: 1,
+         targetId: 2, // attacks Mage
+         hp: 3800,
+         maxHp: 3800,
+-        power: 35, // starting rage to allow immediate Strike/Rend
++        power: 35, // scenario starting resource
+         maxPower: 100,
+         powerType: POWER_TYPE_RAGE,
+         gcdEnd: 0,
+@@ -479,43 +494,15 @@ export class WebGPURHEASimulator {
+   }
+ 
+   private createBuffers() {
+-    // Spell catalog layout matches WGSL SpellDef (SPELL_WORDS words).
+-    const spellData = new ArrayBuffer(MAX_SPELLS * SPELL_WORDS * 4);
+-    const spellU32 = new Uint32Array(spellData);
+-    const spellF32 = new Float32Array(spellData);
+-
+-    for (let i = 0; i < SPELL_CATALOG.length; i++) {
+-      const s = SPELL_CATALOG[i];
+-      const o = i * SPELL_WORDS;
+-      spellU32[o + 0] = s.castTimeMs;
+-      spellU32[o + 1] = s.cooldownMs;
+-      spellF32[o + 2] = s.cost;
+-      spellU32[o + 3] = s.powerType;
+-      spellF32[o + 4] = s.rangeYards;
+-      spellF32[o + 5] = s.baseDamageMin;
+-      spellF32[o + 6] = s.baseDamageMax;
+-      spellF32[o + 7] = s.scaling;
+-      spellU32[o + 8] = s.isHeal;
+-      spellU32[o + 9] = s.isDot;
+-      spellU32[o + 10] = s.dotDurationMs;
+-      spellU32[o + 11] = s.dotTickMs;
+-      spellF32[o + 12] = s.dotDamagePerTick;
+-      spellU32[o + 13] = s.ccType;
+-      spellU32[o + 14] = s.ccDurationMs;
+-      spellU32[o + 15] = s.auraType;
+-      spellF32[o + 16] = s.selfHealRatio ?? 0;
+-      spellU32[o + 17] = s.classId ?? 0;
+-      spellU32[o + 18] = s.selfOnly ? 1 : 0;
+-      spellF32[o + 19] = s.blinkDistance ?? 0;
+-      spellU32[o + 20] = s.channelMs ?? 0;
+-      spellF32[o + 21] = s.absorbBase ?? 0;
+-    }
+-
++    const spellData = packSpellCatalog();
+     this.spellCatalogBuffer = this.device.createBuffer({
+       size: spellData.byteLength,
+       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+     });
+     this.device.queue.writeBuffer(this.spellCatalogBuffer, 0, spellData);
++    const stanceData = packStanceCatalog();
++    this.stanceCatalogBuffer = this.device.createBuffer({size: stanceData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST});
++    this.device.queue.writeBuffer(this.stanceCatalogBuffer, 0, stanceData);
+ 
+     // 2. Live Arena State Buffer
+     // ArenaState sizes and entity/aura strides are defined by shared layout constants.
+@@ -702,11 +689,11 @@ export class WebGPURHEASimulator {
+       this.candidatePlansBuffer, this.candidateFitnessBuffer, this.bestPlanBuffer,
+       this.simParamsBuffer, this.bestResultBuffer, this.searchQueueBuffer,
+       this.liveParamsBuffer, this.combatEventsBuffer, undefined, this.searchSliceBuffer,
+-      this.searchOriginBuffer, this.committedPlanBuffer, this.committedOriginBuffer];
++      this.searchOriginBuffer, this.committedPlanBuffer, this.committedOriginBuffer, this.stanceCatalogBuffer];
+     const layouts: [GPUComputePipeline, number[]][] = [
+       [this.mutatePipeline, [0, 1, 2, 4, 5, 11]],
+-      [this.simulatePipeline, [0, 1, 2, 3, 4, 5, 7, 9, 11]],
+-      [this.advanceLivePipeline, [0, 1, 4, 7, 8, 9, 12]],
++      [this.simulatePipeline, [0, 1, 2, 3, 4, 5, 7, 9, 11, 15]],
++      [this.advanceLivePipeline, [0, 1, 4, 7, 8, 9, 12, 15]],
+       [this.findBestPipeline, [3, 5, 6]],
+       [this.extractElitePipeline, [1, 2, 4, 5, 6]],
+       [this.prepareSearchPipeline, [1, 4, 12, 13, 14]],
+@@ -909,7 +896,7 @@ export class WebGPURHEASimulator {
+       const consumed = Math.max(0, (this.entities[u].decisionCount ?? 0) - this.publishedOrigin[u + 1]);
+       this.elitePlanHorizon[u] = Array.from({length: HORIZON_LENGTH}, (_, h) => {
+         const gene = this.publishedPlan[u * HORIZON_LENGTH + Math.min(consumed + h, HORIZON_LENGTH - 1)];
+-        return {spellId: gene & 255, desiredRange: (gene >>> 8) & 255, targetId: gene >>> 16};
++        return unpackAction(gene);
+       });
+       this.eliteActions[u] = this.elitePlanHorizon[u][0];
+     }
+@@ -944,8 +931,8 @@ export class WebGPURHEASimulator {
+     for (let i = Math.max(this.lastEventSequence, end - 80); i < end; i++) {
+       const o = 1 + (i % 80) * 6;
+       const source = this.entities[u32[o + 1]], target = this.entities[u32[o + 2]];
+-      const spellName = SPELL_CATALOG[u32[o + 3]]?.name;
+-      const type = ({1: 'damage', 2: 'heal', 3: 'cast_start', 4: 'cc', 5: 'death', 6: 'move'} as const)[u32[o + 4] as 1 | 2 | 3 | 4 | 5 | 6];
++      const spellName = u32[o + 4] === 7 ? STANCE_CATALOG[u32[o + 3]]?.name : SPELL_CATALOG[u32[o + 3]]?.name;
++      const type = ({1: 'damage', 2: 'heal', 3: 'cast_start', 4: 'cc', 5: 'death', 6: 'move', 7: 'stance'} as const)[u32[o + 4] as 1 | 2 | 3 | 4 | 5 | 6 | 7];
+       if (!source || !target || !type) continue;
+       this.addLogEntry({timeMs: u32[o], sourceId: source.id, sourceName: source.name,
+         sourceTeam: source.team, targetId: target.id, targetName: target.name, targetTeam: target.team,
+@@ -1006,24 +993,20 @@ export class WebGPURHEASimulator {
+     for (let u = 0; u < MAX_ENTITIES; u++) {
+       const e = this.entities[u];
+       const tgt = e ? e.targetId : 0;
+-      // Melee desires 0y engagement; Casters desire 30y; Healer desires 20y
+-      const desiredRange = (e && e.powerType === POWER_TYPE_RAGE) ? 0 : (e && e.className === "Priest" ? 20 : 30);
+-      
+-      // Seed initial valid signature spell for each unit class
+-      let initialSpell = 0;
+-      if (e) {
+-        if (e.className === "Warrior") initialSpell = 1; // Mortal Strike
+-        else if (e.className === "Priest") initialSpell = 5; // Flash Heal
+-        else if (e.className === "Mage") initialSpell = 10; // Frostbolt
+-        else if (e.className === "Warlock") initialSpell = 13; // Corruption
+-      }
++      // Neutral baseline: Idle, retain target, hold the current separation.
++      // Search chooses spells, ranges and stance changes without class presets.
++      const configuredTarget = this.entities[tgt];
++      const target = e && configuredTarget?.alive && configuredTarget.team !== e.team ? configuredTarget
++        : this.entities.find(candidate => candidate.alive && candidate.team !== e?.team);
++      const desiredRange = e && target ? Math.round(Math.hypot(e.posX - target.posX, e.posY - target.posY)) : 0;
++      const initialSpell = 0;
+ 
+       this.eliteActions[u] = { spellId: initialSpell, targetId: tgt, desiredRange };
+ 
+       for (let h = 0; h < HORIZON_LENGTH; h++) {
+-        // Gene format: bits 0..7: spell_id, bits 8..15: desired_range, bits 16..31: target_id
++        // Gene format: spell/range/target bytes plus independent stance bits 24..25.
+         const spellId = h === 0 ? initialSpell : 0;
+-        plan[u * HORIZON_LENGTH + h] = (spellId & 0xff) | ((desiredRange & 0xff) << 8) | ((tgt & 0xffff) << 16);
++        plan[u * HORIZON_LENGTH + h] = packAction(spellId, desiredRange, tgt);
+       }
+     }
+     this.device.queue.writeBuffer(this.bestPlanBuffer, 0, plan);
+diff --git a/tests/abilities.mjs b/tests/abilities.mjs
+index 8ad5515..1329924 100644
+--- a/tests/abilities.mjs
++++ b/tests/abilities.mjs
+@@ -17,7 +17,7 @@ assert.equal(coil.selfHealRatio, 1);
+ assert.equal(coil.ccType, 6);
+ assert(existsSync('public' + coil.icon));
+ const unit = {className: 'Warlock', alive: 1, auras: Array.from({length: 8}, () => ({pad: 0})),
+-  extraCooldowns: 1201, horrorEnd: 3010, stunEnd: 2010, silenceEnd: 0};
++  incapacitateType: 4, extraCooldowns: 1201, horrorEnd: 3010, stunEnd: 2010, silenceEnd: 0};
+ let cooldown = unitCooldowns(unit, 50).find(s => s.id === 16);
+ assert.equal(cooldown.remainingMs, 120050);
+ assert.equal(cooldown.fraction, 1);
+@@ -89,3 +89,20 @@ assert.deepEqual(beams.beams, [], 'Expired channel retained its beam');
+ beams.reset();
+ assert.deepEqual(beams.beams, []);
+ console.log('PASS Drain Life beam source/target binding, interruption, death, expiry and reset');
++
++const constants = await load('src/constants.ts');
++for (const [id, name] of [[21, 'Charge'], [22, 'Intercept']]) {
++  assert.equal(SPELL_CATALOG[id].name, name); assert(existsSync('public' + SPELL_CATALOG[id].icon));
++}
++assert.equal(SPELL_CATALOG[21].requiresOutOfCombat, true);
++assert.equal(SPELL_CATALOG[21].stanceMask, 2);
++assert.equal(SPELL_CATALOG[22].stanceMask, 8);
++const warrior = {...unit, className: 'Warrior', extraCooldowns3: 151 << 16, extraCooldowns4: 301};
++assert.equal(unitCooldowns(warrior, 100).find(s => s.id === 21).remainingMs, 15000);
++assert.equal(unitCooldowns(warrior, 100).find(s => s.id === 22).remainingMs, 30000);
++assert.deepEqual(constants.unpackAction(constants.packAction(22, 72, 5, 3)), {spellId: 22, desiredRange: 72, targetId: 5, stance: 3});
++assert.equal(constants.packSpellCatalog().byteLength, SPELL_CATALOG.length * constants.SPELL_WORDS * 4);
++assert.equal(constants.packStanceCatalog().byteLength, 64);
++const stunned = {...unit, stunEnd: 0, horrorEnd: 0, controlledStunEnd: 1000};
++assert.equal(visibleEffects(stunned, 500)[0].label, 'Stunned');
++console.log('PASS Warrior catalog, cooldown packing, stance/target gene isolation and controlled stun indicator');
+diff --git a/tests/scheduling.mjs b/tests/scheduling.mjs
+index a88080f..c2d5afb 100644
+--- a/tests/scheduling.mjs
++++ b/tests/scheduling.mjs
+@@ -52,6 +52,15 @@ class FakeGPU {
+ const gpu = new FakeGPU(), sim = new WebGPURHEASimulator();
+ sim.device = gpu;
+ sim.initDefaultEntities(); sim.createBuffers(); await sim.createPipelines();
++const neutralPlan = new Uint32Array(sim.committedPlanBuffer.bytes);
++assert([...neutralPlan].every(g => (g & 255) === 0 && (g >>> 24) === 0), 'Initial plan hardcodes a spell or stance change');
++for (let i = 0; i < 6; i++) {
++  const unit = sim.entities[i], configuredTarget = sim.entities[unit.targetId];
++  const target = configuredTarget?.alive && configuredTarget.team !== unit.team ? configuredTarget
++    : sim.entities.find(candidate => candidate.alive && candidate.team !== unit.team);
++  const distance = target ? Math.round(Math.hypot(unit.posX - target.posX, unit.posY - target.posY)) : 0;
++  assert.equal((neutralPlan[i * 8] >>> 8) & 255, distance, 'Initial range was chosen by class');
++}
+ const binding = (pipeline, index) => sim.pipelineGroups.get(pipeline).entries.find(entry => entry.binding === index).resource.buffer;
+ assert.notEqual(binding(sim.simulatePipeline, 1), binding(sim.advanceLivePipeline, 1), 'Search mutates the live arena');
+ assert.notEqual(binding(sim.simulatePipeline, 7), binding(sim.advanceLivePipeline, 7), 'Search shares the live event heap');
+diff --git a/tests/native-gpu.c b/tests/native-gpu.c
+new file mode 100644
+--- /dev/null
++++ b/tests/native-gpu.c
+@@ -0,0 +1,116 @@
++// Optional compute-only Vulkan runner. Inputs and outputs are raw GPU buffers;
++// all combat execution remains in the production WGSL compiled by Naga.
++#define _POSIX_C_SOURCE 200809L
++#include <vulkan/vulkan.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stdint.h>
++#include <time.h>
++#define CHECK(expr) do { VkResult r = (expr); if (r != VK_SUCCESS) { fprintf(stderr, "%s: Vulkan %d\n", #expr, r); exit(1); } } while (0)
++static void *read_file(const char *path, size_t *size) {
++    FILE *f = fopen(path, "rb"); if (!f) { perror(path); exit(1); }
++    fseek(f, 0, SEEK_END); long n = ftell(f); rewind(f);
++    if (n <= 0) { fprintf(stderr, "Empty input %s\n", path); exit(1); }
++    *size = (size_t)n; void *data = malloc(*size);
++    if (fread(data, 1, *size, f) != *size) exit(1);
++    fclose(f); return data;
++}
++static void path_for(char *out, size_t size, const char *dir, const char *prefix, int binding) {
++    if (snprintf(out, size, "%s/%s%d.bin", dir, prefix, binding) >= (int)size) exit(1);
++}
++int main(int argc, char **argv) {
++    if (argc != 4) { fprintf(stderr, "usage: native-gpu shader.spv manifest first-fixture-dir\n"); return 1; }
++    VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "PVP native compute checks", .apiVersion = VK_API_VERSION_1_1};
++    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
++    VkInstance instance; CHECK(vkCreateInstance(&ici, NULL, &instance));
++    uint32_t count = 0; CHECK(vkEnumeratePhysicalDevices(instance, &count, NULL));
++    if (!count) { fprintf(stderr, "No Vulkan compute device\n"); return 1; }
++    VkPhysicalDevice *devices = calloc(count, sizeof(*devices)); CHECK(vkEnumeratePhysicalDevices(instance, &count, devices));
++    VkPhysicalDevice physical = devices[0]; free(devices);
++    VkPhysicalDeviceProperties props; vkGetPhysicalDeviceProperties(physical, &props);
++    printf("Native compute device: %s (type %u; software results are not hardware throughput)\n", props.deviceName, props.deviceType);
++    uint32_t families = 0; vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, NULL);
++    VkQueueFamilyProperties *qp = calloc(families, sizeof(*qp)); vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, qp);
++    uint32_t family = 0; while (family < families && !(qp[family].queueFlags & VK_QUEUE_COMPUTE_BIT)) family++; free(qp);
++    if (family == families) return 1;
++    float priority = 1;
++    VkDeviceQueueCreateInfo qci = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
++    VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci};
++    VkDevice device; CHECK(vkCreateDevice(physical, &dci, NULL, &device)); VkQueue queue; vkGetDeviceQueue(device, family, 0, &queue);
++    const int bindings[] = {0, 1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 15}; enum {N = 12};
++    VkBuffer buffers[N]; VkDeviceMemory memory[N]; void *mapped[N]; size_t sizes[N];
++    VkDescriptorSetLayoutBinding lb[N]; VkDescriptorBufferInfo bi[N]; VkWriteDescriptorSet writes[N];
++    VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(physical, &mp);
++    for (int i = 0; i < N; i++) {
++        char path[4096]; path_for(path, sizeof(path), argv[3], "in", bindings[i]);
++        void *data = read_file(path, &sizes[i]); free(data);
++        VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sizes[i], .usage = (bindings[i] == 5 || bindings[i] == 8 || bindings[i] == 11 || bindings[i] == 15) ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
++        CHECK(vkCreateBuffer(device, &bci, NULL, &buffers[i]));
++        VkMemoryRequirements req; vkGetBufferMemoryRequirements(device, buffers[i], &req);
++        uint32_t mt = 0; while (mt < mp.memoryTypeCount && (!(req.memoryTypeBits & (1u << mt)) || (mp.memoryTypes[mt].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) != (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))) mt++;
++        if (mt == mp.memoryTypeCount) { fprintf(stderr, "No coherent host memory\n"); return 1; }
++        VkMemoryAllocateInfo mai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size, .memoryTypeIndex = mt};
++        CHECK(vkAllocateMemory(device, &mai, NULL, &memory[i])); CHECK(vkBindBufferMemory(device, buffers[i], memory[i], 0)); CHECK(vkMapMemory(device, memory[i], 0, sizes[i], 0, &mapped[i]));
++        VkDescriptorType type = (bindings[i] == 5 || bindings[i] == 8 || bindings[i] == 11 || bindings[i] == 15) ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++        lb[i] = (VkDescriptorSetLayoutBinding){.binding = (uint32_t)bindings[i], .descriptorType = type, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
++        bi[i] = (VkDescriptorBufferInfo){.buffer = buffers[i], .range = sizes[i]};
++    }
++    VkDescriptorSetLayoutCreateInfo slci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = N, .pBindings = lb};
++    VkDescriptorSetLayout sl; CHECK(vkCreateDescriptorSetLayout(device, &slci, NULL, &sl));
++    VkPipelineLayoutCreateInfo plci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &sl};
++    VkPipelineLayout pl; CHECK(vkCreatePipelineLayout(device, &plci, NULL, &pl));
++    VkDescriptorPoolSize ps[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4}};
++    VkDescriptorPoolCreateInfo dpci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
++    VkDescriptorPool pool; CHECK(vkCreateDescriptorPool(device, &dpci, NULL, &pool));
++    VkDescriptorSetAllocateInfo dsai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &sl};
++    VkDescriptorSet set; CHECK(vkAllocateDescriptorSets(device, &dsai, &set));
++    for (int i = 0; i < N; i++) writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = (uint32_t)bindings[i], .descriptorCount = 1, .descriptorType = lb[i].descriptorType, .pBufferInfo = &bi[i]};
++    vkUpdateDescriptorSets(device, N, writes, 0, NULL);
++    size_t shader_size; void *shader_data = read_file(argv[1], &shader_size);
++    VkShaderModuleCreateInfo smci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = shader_size, .pCode = shader_data};
++    VkShaderModule module; CHECK(vkCreateShaderModule(device, &smci, NULL, &module)); free(shader_data);
++    VkPipeline pipelines[3]; const char *entries[] = {"advance_live", "predict_reference", "mutate_population"};
++    for (int i = 0; i < 3; i++) {
++        VkComputePipelineCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = entries[i]}, .layout = pl};
++        CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pci, NULL, &pipelines[i]));
++    }
++    VkCommandPoolCreateInfo cpci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = family};
++    VkCommandPool cp; CHECK(vkCreateCommandPool(device, &cpci, NULL, &cp));
++    VkCommandBufferAllocateInfo cbai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
++    VkCommandBuffer cb; CHECK(vkAllocateCommandBuffers(device, &cbai, &cb));
++    FILE *manifest = fopen(argv[2], "r"); if (!manifest) return 1;
++    char dir[4096]; unsigned mode, until, step; unsigned cases = 0;
++    while (fscanf(manifest, "%4095s %u %u %u", dir, &mode, &until, &step) == 4) {
++        if (mode > 2 || !step || !until) return 1;
++        for (int i = 0; i < N; i++) {
++            char path[4200]; path_for(path, sizeof(path), dir, "in", bindings[i]); size_t n;
++            void *data = read_file(path, &n); if (n != sizes[i]) { fprintf(stderr, "Layout differs: %s\n", path); return 1; }
++            memcpy(mapped[i], data, n); free(data);
++        }
++        for (unsigned t = step; ; t += step) {
++            unsigned commit = t < until ? t : until; ((uint32_t *)mapped[6])[0] = commit;
++            CHECK(vkResetCommandBuffer(cb, 0));
++            VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; CHECK(vkBeginCommandBuffer(cb, &begin));
++            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[mode]);
++            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, NULL); vkCmdDispatch(cb, mode == 2 ? (((uint32_t *)mapped[9])[1] + 31u) / 32u : 1, 1, 1);
++            VkMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
++            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
++            CHECK(vkEndCommandBuffer(cb)); VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
++            CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); CHECK(vkQueueWaitIdle(queue));
++            if (commit == until) break;
++        }
++        for (int i = 0; i < N; i++) {
++            char path[4200]; path_for(path, sizeof(path), dir, "out", bindings[i]); FILE *f = fopen(path, "wb"); if (!f) return 1;
++            if (fwrite(mapped[i], 1, sizes[i], f) != sizes[i]) return 1;
++            fclose(f);
++        }
++        cases++;
++    }
++    fclose(manifest); printf("Completed %u native GPU cases\n", cases);
++    for (int i = 0; i < 3; i++) vkDestroyPipeline(device, pipelines[i], NULL);
++    vkDestroyCommandPool(device, cp, NULL); vkDestroyShaderModule(device, module, NULL);
++    vkDestroyDescriptorPool(device, pool, NULL); vkDestroyPipelineLayout(device, pl, NULL); vkDestroyDescriptorSetLayout(device, sl, NULL);
++    for (int i = 0; i < N; i++) { vkUnmapMemory(device, memory[i]); vkDestroyBuffer(device, buffers[i], NULL); vkFreeMemory(device, memory[i], NULL); }
++    vkDestroyDevice(device, NULL); vkDestroyInstance(instance, NULL); return 0;
++}
+diff --git a/tests/warrior-native.mjs b/tests/warrior-native.mjs
+new file mode 100644
+--- /dev/null
++++ b/tests/warrior-native.mjs
+@@ -0,0 +1,239 @@
++// Optional native GPU execution of the production shader. No CPU combat reference.
++import assert from 'node:assert/strict';
++import {mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync} from 'node:fs';
++import {tmpdir} from 'node:os';
++import {join} from 'node:path';
++import {spawnSync} from 'node:child_process';
++import {build} from 'vite';
++const bundle = await build({configFile: false, logLevel: 'silent', build: {write: false,
++  lib: {entry: 'src/constants.ts', formats: ['es']}}});
++const code = (Array.isArray(bundle) ? bundle[0] : bundle).output.find(x => x.type === 'chunk').code;
++const C = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
++const dir = mkdtempSync(join(tmpdir(), 'pvp-warrior-native-'));
++function run(cmd, args, opts = {}) {
++  const r = spawnSync(cmd, args, {encoding: 'utf8', timeout: 180000, ...opts});
++  if (r.status !== 0) throw Error(`${cmd}: ${r.error ?? ''}\n${r.stdout ?? ''}\n${r.stderr ?? ''}`);
++  if (r.stdout.trim()) console.log(r.stdout.trim());
++}
++const naga = process.env.NAGA ?? (existsSync('/tmp/pvp-naga/bin/naga') ? '/tmp/pvp-naga/bin/naga' : 'naga');
++run(process.execPath, ['scripts/export-gpu-shader.mjs', join(dir, 'sim.wgsl'), '--parity']);
++run(naga, [join(dir, 'sim.wgsl'), join(dir, 'sim.spv')]);
++run('cc', ['-O2', '-Wall', '-Wextra', '-Werror', 'tests/native-gpu.c', '-lvulkan', '-o', join(dir, 'native-gpu')]);
++const O = C.ENTITY_FIELD_OFFSETS, base = id => C.ARENA_HEADER_WORDS + id * C.ENTITY_WORDS;
++function initial() {
++  const data = new ArrayBuffer(C.ARENA_BYTES), u = new Uint32Array(data), f = new Float32Array(data);
++  u[1] = C.MAX_ENTITIES;
++  for (let i = 0; i < 6; i++) {
++    const b = base(i); u[b] = i; u[b + 1] = i === 0 ? 0 : 1; u[b + 2] = Number(i < 2); u[b + 3] = i === 0 ? 1 : 0;
++    f[b + 4] = f[b + 5] = i < 2 ? 30000 : 0;
++    f[b + 6] = f[b + 7] = 100; u[b + 8] = 1;
++    u[b + 12] = 60000; u[b + 13] = 2000;
++    f[b + 14] = 300; f[b + 15] = 300; f[b + 17] = 500;
++    f[b + 18] = i === 0 ? 20 : 40; f[b + 19] = 20;
++    u[b + 25] = i < 2 ? 1 : 0;
++    u[b + O.uint.stance] = 1; u[b + O.uint.stanceMask] = i < 2 ? 14 : 0;
++    f[b + O.float.stanceRageRetention] = 10;
++  }
++  return data;
++}
++const ufield = (data, id, name, value) => new Uint32Array(data)[base(id) + O.uint[name]] = value;
++const ffield = (data, id, name, value) => new Float32Array(data)[base(id) + O.float[name]] = value;
++function plan(spell = 0, stance = 0) {
++  const p = new Uint32Array(C.BEST_PLAN_WORDS);
++  for (let i = 0; i < 6; i++) for (let h = 0; h < 8; h++) p[i * 8 + h] = C.packAction(i === 0 ? spell : 0, 20, i === 0 ? 1 : 0, i === 0 ? stance : 0);
++  return p;
++}
++const manifest = [], cases = [];
++let mutationPath;
++function fixture(name, {spell = 0, stance = 0, until = 2500, configure = () => {}, genes, spellData, check = () => {}} = {}) {
++  const state = initial(), queue = new Uint32Array(C.SIM_QUEUE_WORDS), genesData = genes ?? plan(spell, stance); configure(state, queue);
++  const paths = [];
++  for (const mode of ['prediction', 'live']) {
++    const path = join(dir, `${cases.length}-${mode}`); mkdirSync(path); paths.push(path);
++    const inputs = {0: spellData ?? C.packSpellCatalog(), 1: state, 2: new Uint32Array(512 * C.BEST_PLAN_WORDS), 5: new Uint32Array([12345, 512, 8, 5000]), 11: new Uint32Array([0, 512, 0, 0]), 4: genesData, 7: queue,
++      8: new Uint32Array(4), 9: new Uint32Array(C.COMBAT_EVENTS_WORDS),
++      10: new ArrayBuffer(C.ARENA_BYTES + C.SIM_QUEUE_BYTES), 12: new Uint32Array(8), 15: C.packStanceCatalog()};
++    for (const [binding, data] of Object.entries(inputs)) writeFileSync(join(path, `in${binding}.bin`), Buffer.from(data.buffer ?? data));
++    manifest.push(`${path} ${Number(mode === 'prediction')} ${until} ${mode === 'prediction' ? until : 50}`);
++  }
++  cases.push({name, paths, check});
++}
++const get = (view, id, name) => view[base(id) + (O.uint[name] ?? O.float[name])];
++const near = (actual, expected, message) => assert(Math.abs(actual - expected) < 0.01, `${message}: ${actual} vs ${expected}`);
++const denied = (u, f) => { assert.equal(get(u, 0, 'gcdEnd'), 0); near(get(f, 0, 'posX'), 20, 'Denied dash moved'); };
++fixture('Charge movement, generation, cooldown and stun independent of fear DR', {spell: 21,
++  configure: s => { ffield(s, 0, 'power', 0); ufield(s, 1, 'drStunCount', 3); ufield(s, 1, 'drStunResetAt', 10000); },
++  check: (u, f, events) => { near(get(f, 0, 'posX'), 37, 'Charge endpoint'); near(get(f, 0, 'power'), 15, 'Charge Rage');
++    assert.equal(get(u, 1, 'controlledStunEnd'), 1010); assert.equal(get(u, 1, 'drStunCount'), 3);
++    assert.equal(get(u, 0, 'extraCooldowns3') >>> 16, 151); assert(events.some(e => e.spell === 21 && e.kind === 6)); }});
++fixture('Dash interpolation across 50ms commits', {spell: 21, until: 200, check: (u, f) => {
++  assert(get(f, 0, 'posX') > 20 && get(f, 0, 'posX') < 37); assert(get(u, 0, 'dashEnd') > 200); }});
++{
++  const spells = C.packSpellCatalog(), spellWords = new Uint32Array(spells);
++  spellWords[12 * C.SPELL_WORDS + 10] = 100; spellWords[12 * C.SPELL_WORDS + 14] = 100;
++  fixture('Short root cancels in-flight dash before its next queued event', {until: 500, spellData: spells,
++    configure: (s, queue) => {
++      const u = new Uint32Array(s); u[2] = 3; // initialized + active dash on entity 0
++      ufield(s, 0, 'dashStart', 0); ufield(s, 0, 'dashEnd', 500);
++      for (const [key, value] of Object.entries({dashOriginX: 20, dashOriginY: 20, dashDestX: 37, dashDestY: 20})) ffield(s, 0, key, value);
++      ufield(s, 2, 'alive', 1); ffield(s, 2, 'hp', 30000); ffield(s, 2, 'maxHp', 30000);
++      u[base(2) + 25] = 3; ufield(s, 2, 'powerType', 0); ufield(s, 2, 'castEnd', 200); ufield(s, 2, 'castSpellId', 12);
++      ffield(s, 2, 'posX', 20); ffield(s, 2, 'power', 10000); ffield(s, 2, 'maxPower', 10000);
++      ufield(s, 2, 'stance', 0); ufield(s, 2, 'stanceMask', 0);
++      queue[0] = 2; queue.set([200, 2, 2, 0, 12, 0], 2); queue.set([500, 8, 0, 1, 21, 0], 8);
++    }, check: (u, f) => { near(get(f, 0, 'posX'), 26.8, 'Cancelled dash stop'); assert.equal(get(u, 0, 'dashEnd'), 200); assert.equal(u[2], 1); }});
++}
++fixture('Charge requires Battle', {spell: 21, configure: s => ufield(s, 0, 'stance', 3), check: denied});
++fixture('Intercept requires Berserker', {spell: 22, check: denied});
++fixture('Explicit switch plus Intercept in one decision', {spell: 22, stance: 3, until: 500,
++  check: (u, f, events) => { assert.equal(get(u, 0, 'stance'), 3); near(get(f, 0, 'power'), 0, 'Stance retention then cost');
++    near(get(f, 0, 'posX'), 37, 'Intercept endpoint'); assert.equal(get(u, 0, 'stanceReadyAt'), 1010);
++    assert.equal(get(u, 1, 'controlledStunEnd'), 3010); assert.equal(get(u, 0, 'extraCooldowns4') & 65535, 301);
++    assert(events.some(e => e.kind === 7 && e.spell === 3)); }});
++fixture('Charge forbidden in combat', {spell: 21, configure: s => ufield(s, 0, 'combatUntil', 10000), check: denied});
++fixture('Charge minimum range', {spell: 21, configure: s => ffield(s, 1, 'posX', 27), check: denied});
++fixture('Charge maximum range', {spell: 21, configure: s => ffield(s, 1, 'posX', 46), check: denied});
++fixture('Root prevents Charge', {spell: 21, configure: s => { const u = new Uint32Array(s), a = base(0) + C.ENTITY_BASE_WORDS;
++  u[a + 1] = 6; u[a + 2] = 10000; }, check: denied});
++fixture('Pillar blocks Charge', {spell: 21, configure: s => { const f = new Float32Array(s), p = C.ARENA_PILLARS_OFFSET_WORDS;
++  f[p] = 30; f[p + 1] = 20; f[p + 2] = 2; }, check: denied});
++fixture('Unit-radius swept clearance blocks Charge', {spell: 21, configure: s => { const f = new Float32Array(s), p = C.ARENA_PILLARS_OFFSET_WORDS;
++  f[p] = 30; f[p + 1] = 22.4; f[p + 2] = 1; }, check: denied});
++// A rejected ability must preserve the independently planned range intent.
++// Stop after the first decision so later movement cannot hide an illegal cast.
++function rejectedDashWalk(name, {spell = 22, range = 0, targetX = 40, stance = 1, configure = () => {}} = {}) {
++  const genes = plan(spell);
++  for (let h = 0; h < 8; h++) genes[h] = C.packAction(spell, range, 1);
++  fixture(name, {genes, until: 50, configure: s => {
++    ffield(s, 0, 'speed', 7); ffield(s, 1, 'posX', targetX); ufield(s, 0, 'stance', stance); configure(s);
++  }, check: (u, f, events) => {
++    const expectedX = targetX - 20 > range + 1 ? 23.5 : targetX - 20 < range - 1 ? 16.5 : 20;
++    near(get(f, 0, 'posX'), expectedX, 'Rejected dash did not preserve planned movement');
++    assert.equal(get(u, 0, 'gcdEnd'), name.includes('GCD') ? 5000 : 0);
++    assert.equal(get(u, 0, 'dashEnd'), 0);
++    assert.equal(get(u, 0, 'extraCooldowns3'), 0);
++    assert.equal(get(u, 0, 'extraCooldowns4'), name.includes('cooldown') ? 100 : 0);
++    assert(!events.some(e => e.source === 0 && e.kind === 6), 'Rejected dash executed after walking');
++  }});
++}
++rejectedDashWalk('Wrong-stance Intercept preserves planned approach');
++rejectedDashWalk('In-combat Charge preserves planned retreat', {spell: 21, range: 30,
++  configure: s => ufield(s, 0, 'combatUntil', 10000)});
++rejectedDashWalk('Out-of-range Charge cannot become valid by walking closer', {spell: 21, targetX: 46});
++rejectedDashWalk('Too-close Intercept cannot become valid by walking away', {stance: 3, targetX: 27, range: 20});
++rejectedDashWalk('Intercept cooldown preserves planned approach', {stance: 3,
++  configure: s => ufield(s, 0, 'extraCooldowns4', 100)});
++rejectedDashWalk('Insufficient-rage Intercept preserves planned approach', {stance: 3,
++  configure: s => ffield(s, 0, 'power', 0)});
++rejectedDashWalk('Active GCD preserves planned approach', {stance: 3,
++  configure: s => ufield(s, 0, 'gcdEnd', 5000)});
++rejectedDashWalk('Blocked Charge preserves planned approach', {spell: 21, configure: s => {
++  const f = new Float32Array(s), p = C.ARENA_PILLARS_OFFSET_WORDS;
++  f[p] = 30; f[p + 1] = 20; f[p + 2] = 2;
++}});
++fixture('A valid Charge starts before ordinary walking changes its minimum range', {spell: 21, until: 50,
++  configure: s => { ffield(s, 0, 'speed', 7); ffield(s, 1, 'posX', 28.2); }, check: (u, f) => {
++    near(get(f, 0, 'dashOriginX'), 20, 'Charge performed ordinary movement before launching');
++    assert(get(u, 0, 'dashEnd') > 50); assert.equal(get(u, 0, 'gcdEnd'), 1510);
++    assert.equal(get(u, 1, 'controlledStunEnd'), 1010);
++  }});
++fixture('Root still prevents both a dash and ordinary walking', {spell: 21, until: 50,
++  configure: s => { ffield(s, 0, 'speed', 7); const u = new Uint32Array(s), a = base(0) + C.ENTITY_BASE_WORDS;
++    u[a + 1] = 6; u[a + 2] = 10000;
++  }, check: denied});
++fixture('Ordinary caster movement and casting remain independent', {spell: 10, until: 50,
++  configure: s => { const u = new Uint32Array(s); u[base(0) + 25] = 3; ufield(s, 0, 'powerType', 0);
++    ufield(s, 0, 'stance', 0); ufield(s, 0, 'stanceMask', 0); ffield(s, 0, 'speed', 7);
++    ffield(s, 0, 'power', 10000); ffield(s, 0, 'maxPower', 10000);
++  }, genes: (() => { const genes = plan(10); genes[0] = C.packAction(10, 0, 1); return genes; })(),
++  check: (u, f) => { near(get(f, 0, 'posX'), 23.5, 'Caster movement changed');
++    assert.equal(get(u, 0, 'castSpellId'), 10); assert.equal(get(u, 0, 'castEnd'), 2010);
++  }});
++fixture('Stance switch independent of spell GCD', {stance: 3, until: 500, configure: s => ufield(s, 0, 'gcdEnd', 5000),
++  check: (u, f) => { assert.equal(get(u, 0, 'stance'), 3); assert.equal(get(u, 0, 'gcdEnd'), 5000); near(get(f, 0, 'power'), 10, 'Retained Rage'); }});
++{
++  const genes = plan(); genes[0] = C.packAction(1, 3, 1); genes[1] = C.packAction(0, 3, 1, 2);
++  fixture('Planned stance decision occurs during active spell GCD', {genes, until: 600,
++    configure: s => ffield(s, 1, 'posX', 23), check: u => {
++      assert.equal(get(u, 0, 'stance'), 2); assert.equal(get(u, 0, 'gcdEnd'), 1510);
++      assert.equal(get(u, 0, 'stanceReadyAt'), 1510);
++    }});
++}
++fixture('Stance switch own lockout', {stance: 3, until: 1500, configure: s => ufield(s, 0, 'stanceReadyAt', 2000),
++  check: (u, f) => { assert.equal(get(u, 0, 'stance'), 1); near(get(f, 0, 'power'), 100, 'Failed switch spent Rage'); }});
++fixture('Repeated current stance preserves Rage', {stance: 1, check: (u, f) => near(get(f, 0, 'power'), 100, 'No-op switch lost Rage')});
++fixture('Unsupported stance request ignored', {stance: 3, configure: s => ufield(s, 0, 'stanceMask', 2), check: (u, f) => {
++  assert.equal(get(u, 0, 'stance'), 1); near(get(f, 0, 'power'), 100, 'Unsupported stance lost Rage'); }});
++fixture('Talent-configurable stance retention', {stance: 3, configure: s => ffield(s, 0, 'stanceRageRetention', 25),
++  check: (u, f) => near(get(f, 0, 'power'), 25, 'Talent Rage retention')});
++fixture('Rend unavailable in Berserker', {spell: 2, configure: s => ufield(s, 0, 'stance', 3), check: (u) => assert.equal(get(u, 0, 'gcdEnd'), 0)});
++fixture('Hamstring unavailable in Defensive', {spell: 3, configure: s => ufield(s, 0, 'stance', 2), check: (u) => assert.equal(get(u, 0, 'gcdEnd'), 0)});
++fixture('Shield Wall requires Defensive', {spell: 4, check: (u) => assert.equal(get(u, 0, 'gcdEnd'), 0)});
++fixture('Shield Wall works in Defensive', {spell: 4, stance: 2, configure: s => ffield(s, 0, 'stanceRageRetention', 25), check: (u) => {
++  assert.equal(new Uint32Array(u.buffer)[base(0) + C.ENTITY_BASE_WORDS + 1] & 255, 2); }});
++fixture('Stun immunity does not consume Fear DR', {spell: 21, configure: s => {
++  ufield(s, 1, 'controlledStunCount', 3); ufield(s, 1, 'controlledStunResetAt', 10000); ufield(s, 1, 'drStunCount', 2);
++}, check: u => { assert.equal(get(u, 1, 'controlledStunEnd'), 0); assert.equal(get(u, 1, 'drStunCount'), 2); }});
++for (const [stance, multiplier] of [[1, 1], [2, 0.9]]) {
++  fixture(`Outgoing damage modifier stance ${stance}`, {spell: 1, until: 500, configure: s => {
++    ufield(s, 0, 'stance', stance); ffield(s, 1, 'posX', 23);
++  }, check: (u, f) => near(get(f, 1, 'hp'), 30000 - (220 + 1.1 * 300) * (1000 / 1500) * multiplier, 'Outgoing stance modifier')});
++}
++// Existing pending casts exercise stance incoming/outgoing modifiers without
++// changing target range or assuming a new CPU implementation of combat.
++for (const [stance, multiplier] of [[1, 1], [2, 0.9], [3, 1.1]]) {
++  const genes = plan(); for (let h = 0; h < 8; h++) genes[8 + h] = C.packAction(11, 20, 0);
++  fixture(`Incoming damage modifier stance ${stance}`, {genes, until: 500, configure: s => {
++    ufield(s, 0, 'stance', stance); const u = new Uint32Array(s), f = new Float32Array(s);
++    u[base(1) + 25] = 3; ufield(s, 1, 'stance', 0); ufield(s, 1, 'stanceMask', 0); ufield(s, 1, 'powerType', 0);
++    f[base(1) + 6] = f[base(1) + 7] = 10000;
++  }, check: (u, f) => near(get(f, 0, 'hp'), 30000 - 485 * multiplier, 'Incoming stance modifier')});
++}
++// Reuse the same buffer layout, but execute the production mutation entry point.
++mutationPath = join(dir, 'mutation'); mkdirSync(mutationPath);
++for (const name of ['0', '1', '2', '4', '5', '7', '8', '9', '10', '11', '12', '15']) {
++  const data = readFileSync(join(cases[0].paths[0], `in${name}.bin`));
++  if (name === '1') {
++    const state = initial(), u = new Uint32Array(state);
++    u[base(1) + 25] = 3; ufield(state, 1, 'stance', 0); ufield(state, 1, 'stanceMask', 0); ufield(state, 1, 'powerType', 0);
++    writeFileSync(join(mutationPath, `in${name}.bin`), Buffer.from(state));
++  } else if (name === '4') writeFileSync(join(mutationPath, `in${name}.bin`), Buffer.from(plan().buffer));
++  else writeFileSync(join(mutationPath, `in${name}.bin`), data);
++}
++manifest.push(`${mutationPath} 2 50 50`);
++writeFileSync(join(dir, 'manifest'), manifest.join('\n'));
++run(join(dir, 'native-gpu'), [join(dir, 'sim.spv'), join(dir, 'manifest'), cases[0].paths[0]], {
++  env: {...process.env, ...(process.env.VK_DRIVER_FILES ? {} : existsSync('/usr/share/vulkan/icd.d/lvp_icd.json') ? {VK_DRIVER_FILES: '/usr/share/vulkan/icd.d/lvp_icd.json'} : {})},
++});
++for (const {name, paths, check} of cases) {
++  // Buffer.byteOffset can point into a Node slab; use a precise ArrayBuffer copy.
++  const read = (path, id) => { const b = readFileSync(join(path, `out${id}.bin`)); return new Uint32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)); };
++  const reference = read(paths[0], 10), live = read(paths[1], 1), heap = read(paths[1], 7);
++  assert.equal(live[3], 0, `${name}: iteration/queue overflow`); assert.equal(heap[1], 0, `${name}: queue overflow`);
++  assert.deepEqual(live, reference.slice(0, C.ARENA_WORDS), `${name}: live/prediction state differs`);
++  assert.deepEqual(heap.slice(0, 2 + heap[0] * 6), reference.slice(C.ARENA_WORDS, C.ARENA_WORDS + 2 + heap[0] * 6), `${name}: heap differs`);
++  const log = read(paths[1], 9), events = [];
++  for (let i = Math.max(0, log[0] - 80); i < log[0]; i++) { const b = 1 + (i % 80) * 6; events.push({time: log[b], source: log[b + 1], target: log[b + 2], spell: log[b + 3], kind: log[b + 4]}); }
++  check(live, new Float32Array(live.buffer), events);
++  console.log(`PASS ${name} (native GPU live/prediction parity)`);
++}
++console.log(`Native fixture artifacts: ${dir}`);
++
++const mutationBytes = readFileSync(join(mutationPath, 'out2.bin'));
++const mutations = new Uint32Array(mutationBytes.buffer.slice(mutationBytes.byteOffset, mutationBytes.byteOffset + mutationBytes.byteLength));
++const baseline = plan(); let warriorRanged = false, mageMelee = false, stanceChanges = false;
++for (let c = 0; c < 512; c++) for (let u = 0; u < 6; u++) for (let h = 0; h < 8; h++) {
++  const gene = mutations[(c * 6 + u) * 8 + h], offset = u * 8 + h;
++  if (c === 0 || c === 256 || (u === 0 ? c >= 256 : c < 256)) {
++    assert.equal(gene, baseline[offset], 'Mutation changed an opposing team or baseline gene'); continue;
++  }
++  if (u > 1) continue;
++  const action = C.unpackAction(gene), spell = C.SPELL_CATALOG[action.spellId];
++  assert(action.targetId <= 1, 'Stance bits leaked into target ID');
++  assert(action.desiredRange <= 72);
++  assert(action.spellId === 0 || spell.classId === (u === 0 ? 1 : 3));
++  if (u === 0) { warriorRanged ||= action.desiredRange > 5; stanceChanges ||= action.stance > 0; }
++  else { assert.equal(action.stance, 0); mageMelee ||= action.desiredRange <= 5; }
++}
++assert(warriorRanged && mageMelee && stanceChanges, 'Generic movement/stance exploration missing');
++console.log('PASS native GPU mutation: explicit stance genes, generic ranges, ownership and opposing-team isolation');

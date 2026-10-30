@@ -52,6 +52,15 @@ class FakeGPU {
 const gpu = new FakeGPU(), sim = new WebGPURHEASimulator();
 sim.device = gpu;
 sim.initDefaultEntities(); sim.createBuffers(); await sim.createPipelines();
+// User-approved pre-expansion baseline, including its known opening heuristics.
+const restoredPlan = new Uint32Array(sim.committedPlanBuffer.bytes);
+for (const [unit, spell, range] of [[0, 1, 0], [1, 5, 20], [2, 10, 30], [3, 13, 30]]) {
+  assert.equal(restoredPlan[unit * 8] & 255, spell, 'Opening spell baseline was not restored');
+  for (let h = 0; h < 8; h++) {
+    assert.equal((restoredPlan[unit * 8 + h] >>> 8) & 255, range, 'Opening distance baseline was not restored');
+    if (h > 0) assert.equal(restoredPlan[unit * 8 + h] & 255, 0);
+  }
+}
 const binding = (pipeline, index) => sim.pipelineGroups.get(pipeline).entries.find(entry => entry.binding === index).resource.buffer;
 assert.notEqual(binding(sim.simulatePipeline, 1), binding(sim.advanceLivePipeline, 1), 'Search mutates the live arena');
 assert.notEqual(binding(sim.simulatePipeline, 7), binding(sim.advanceLivePipeline, 7), 'Search shares the live event heap');

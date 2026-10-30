@@ -47,10 +47,11 @@ Status below reflects source inspection plus the shared-engine refactor, not a f
 - [x] Mutation filtering for spell ownership, resource type, and available power (with future steps `h > 0` checking ownership so spenders can be planned after future resource generation), plus 50% coordinate-ascent single-unit mutations.
 - [x] Enforce individual spell cooldowns in live combat, rollouts, and `h == 0` action masking using packed 100ms cooldown timestamps in `EntityState.auras[i].pad`.
 - [x] Make live combat GPU-only. Both `simulate_candidate` and `advance_live` call `advance_combat`; TypeScript only dispatches and decodes snapshots/events. The live event heap persists between steps and is cloned for rollouts.
-- [ ] Remove behavioral fallbacks and class/resource-specific decisions:
-  - `seedInitialBestPlan` in `src/simulator.ts` still hardcodes initial spell choices (Mortal Strike, Flash Heal, Frostbolt, Corruption) and desired ranges (Warrior 0y, Priest 20y, Casters 30y).
-  - WGSL `mutate_population` retains hardcoded spatial range logic: rage users forced to 0y, mana users forced into discrete choices `[5y, 15y, 25y, 30y]`.
-  - [x] Spell ownership now uses catalog class metadata rather than shader ID-range checks; configurable entity loadouts remain future work.
+- [ ] Remove behavioral fallbacks and class/resource-specific decisions (restored by user-requested rollback, 2026-10-30):
+  - `seedInitialBestPlan` again seeds Mortal Strike, Flash Heal, Frostbolt and Corruption, with 0/20/30 yd class/resource presets.
+  - WGSL mutation again forces rage users to 0 yd and samples mana-user ranges from [5, 15, 25, 30] yd.
+  - These are known Ground Rule #1 exceptions in the restored diagnostic baseline, not a completed emergent-behavior solution.
+  - [x] Spell ownership still uses catalog class metadata; this improvement predates the rolled-back expansion.
 - [x] Align fitness with pure-outcome requirements (effective healing only, no unabsorbed shield application credit, temporal discount factor `time_weight`) and eliminate atomic race conditions in `find_best_candidate`.
 
 Evidence: `src/shaders/sim.wgsl.ts` (`simulate_candidate`, `mutate_population`, `is_spell_valid`, `find_best_candidate`, `extract_elite_plan`, `get_spell_cd_end`, `set_spell_cd_end`); `src/simulator.ts` (`stepRHEAAsync`, GPU snapshot decoding, initial plan seeding); `docs/SANITY_CHECK.md`.
@@ -74,18 +75,28 @@ Evidence: `src/shaders/sim.wgsl.ts` (`simulate_candidate`, `mutate_population`, 
 
 Evidence: `src/shaders/sim.wgsl.ts` (`AuraSlot`, `apply_aura`, modifier helpers, `apply_cc`, event kind 3); `src/simulator.ts` (GPU state packing/decoding).
 
-### Warrior expansion — next priority (user request, 2026-10-30)
-- [ ] Add Battle, Defensive and Berserker stances as explicit planner choices, with data-driven ability requirements, stance modifiers, switching cooldown and rage retention rules. Use Classic stance/ability rules as the baseline, applying known Forever-specific differences; specify talent assumptions when they affect values.
-- [ ] Add Charge and Intercept with stance requirements, minimum/maximum ranges, resource cost/generation, cooldowns, movement and CC described by catalog data. Resolve movement against pillars/bounds in the shared GPU engine.
-- [ ] Allow stance switching independently of the normal spell GCD; model its own lockout without an automatic stance-switch fallback. Search must plan the stance transition and follow-up ability.
-- [ ] Remove hardcoded initial spell/range seeds and resource-based range mutation as part of this expansion, so Warrior movement and stance usage can emerge from search.
-- [ ] Extend cooldown storage beyond the current spell-21 limit before appending more abilities; centralize storage capacity and validate host/diagnostic layouts.
-- [ ] Show current stance, stance changes, Charge/Intercept movement and CC in unit frames and the combat log.
-- [ ] Follow-up Warrior candidates: Pummel, Disarm, Berserker Rage and Execute. These are proposed additions, not implemented mechanics.
-- [ ] Validate stance legality, rage changes, switch lockout, Charge/Intercept range/LoS/collision, cooldowns and live/rollout agreement. Browser verification remains deferred by user request.
+### Warrior stance/mobility experiment — rolled back; research required (2026-10-30)
+
+User requested restoration of the pre-expansion baseline after battle-log(6) and
+battle-log(7) showed ineffective Warrior behavior. Active code is restored to
+commit `8d58c1a`: no Warrior stance state/choices/modifiers, Charge or Intercept;
+original opening spells and class/resource distance sampling are restored.
+Polymorph, Ice Barrier, Blink, Drain Life, Drain Life graphics, damage/healing log
+values, bounded log refresh, and CC reporting corrections are retained.
+
+- [x] Archive the failed implementation and its native tests in `diagnostics/warrior-stance-experiment.patch`, based on `8d58c1a`, before restoring the baseline.
+- [x] Roll back the stance/mobility engine, expanded plan fields, generic distance mutation, neutral opening plans, and associated layout/UI changes. Entity state returns from 115 to 100 words; arena returns from 2840 to 2480 bytes. Search scheduling/budget is unchanged.
+- [ ] Research coordinated spell, target, distance and stance search before reintroducing the expansion. Log(7) showed Mortal Strike with 69 yd desired distance, 14 of 33 snapshots requesting over 30 yd, and no further Warrior ability activation after Intercept at 4.11s despite the match continuing to 32.4s.
+- [ ] Investigate stance churn and Rage starvation: frequent stance changes repeatedly retained only 10 Rage. Establish whether independent/local mutations can preserve useful combinations at the existing candidate budget; do not add forced chasing, automatic stance switches or artificial distance rewards as the replacement solution.
+- [ ] Instrument winning/baseline/rejected candidate outcomes to distinguish search failure, objective incentives and invalid plans. The battle exports alone do not establish the complete cause of candidate selection.
+- [ ] Investigate the adaptive-throughput estimator independently: both supplied logs report zero measured throughput and a 1024-candidate population. The 250ms measurement window resets after each short batch with one batch in flight. No estimator/budget increase is included in this rollback.
+- [ ] When revisiting mobility, preserve independent range movement after failed gap closers, evaluate activation at the decision's starting position, and ensure render/prediction/live agreement. A partial fix passed native GPU mechanics tests but did not solve the strategic retreating in log(7).
+- [ ] Reassess the larger search space and memory/performance costs with fixed-budget planning-quality comparisons and hardware throughput measurements before re-enabling. Native software Vulkan parity is insufficient evidence of useful combat strategy or hardware performance.
+- [ ] Reintroduce Classic/Forever stance legality, independent stance cooldown, Rage retention, damage/crit modifiers and Charge/Intercept only after research demonstrates reliable behavior. Exact Forever PvP DR categories/timing and transit speed still need validation.
+- [ ] Follow-up Warrior candidates remain Pummel, Disarm, Berserker Rage and Execute. Existing Shield Wall tuning/equipment requirements and wider Classic fidelity need a separate audit.
 
 ### Spell catalog — expanded, with remaining abilities
-- [x] Warrior: Mortal Strike, Rend, Hamstring, Shield Wall.
+- [x] Warrior: Mortal Strike, Rend, Hamstring, Shield Wall. Stances, Charge and Intercept were rolled back; see the research item above.
 - [x] Priest: Flash Heal, Renew, Power Word: Shield, Shadow Word: Pain, Psychic Scream.
 - [x] Mage: Frostbolt, Fire Blast, Frost Nova.
 - [x] Warlock: Corruption, Shadow Bolt, Fear, Death Coil (damage, effective self-heal, independent 3s horror, 120s cooldown).
@@ -113,17 +124,19 @@ Evidence: `src/main.ts` (unit frame and arena rendering, log export, playback); 
 - [ ] DEFERRED by user (2026-10-30): Verify browser execution of the current shader and real match behavior. Native compilation does not establish browser runtime correctness.
 
 ### Battle-log follow-up (2026-10-30)
+- Archived: the failed-dash freeze fix passed native mechanics tests, but log(7) still showed retreating; the entire expansion has now been rolled back.
+- [ ] Research the failed Warrior experiment using logs (6)/(7) and the archived implementation; keep budget changes separate.
 - [x] Add animated Drain Life channel beam driven by cast/aura state; stop on cancellation, expiry or death.
 - [x] Stop reporting DR-immune CC attempts as successful CC and omit zero-damage spell events.
 - [ ] Investigate wasted Polymorph choices with candidate-score instrumentation. Battle log (5) shows attempts during DR immunity and effective casts broken by allied damage; no hardcoded Polymorph-selection rule exists. Current export lacks per-candidate reasoning/scores.
-- Remaining behavioral hardcoding: initial spell/range seeds and resource-based range mutation. These have not been removed.
+- [ ] Opening/range heuristics are restored as part of the user-approved rollback; replacing them remains research work.
 
 ## 3. Recommended Next Work
 
-**Current priority (2026-10-30): Warrior stances, Charge and Intercept**, including
-removal of the remaining opening/range heuristics and adequate cooldown storage.
-See the Warrior expansion checklist above. This supersedes the earlier signature
-ability priority below; those four abilities have already been added.
+**Warrior expansion rolled back by user request (2026-10-30).** The restored
+pre-expansion baseline is active. Research the failed movement/stance/search
+experiment before another attempt; see the detailed checklist above. The four
+signature spells added before that experiment remain available.
 
 1. **DEFERRED (user request, 2026-10-30): Verify shared-engine runtime parity in a WebGPU browser.** The duplicate CPU combat loop is removed. Run `diagnostics/combat-parity.html` to compare uninterrupted predictions, midfight predictions, and 50 ms live commits for casts, periodic effects, shields, and roots. Build and native WGSL/SPIR-V compilation pass; browser execution remains unverified in this headless sandbox.
 2. **Aura stacks, dispels & extended CC mechanics (after signature abilities):**
@@ -137,9 +150,9 @@ ability priority below; those four abilities have already been added.
 4. **UI feedback for cooldowns and split aura placement:**
    - Render cooldown sweep overlays on abilities.
    - Split positive buffs and harmful debuffs into separate rows.
-5. **Eliminate remaining hardcoded heuristic decisions (Ground Rule #1):**
-   - Generalize `seedInitialBestPlan` in `simulator.ts` to avoid hardcoded spell/range assignments.
-   - Refactor `mutate_population` range selection into generic data-driven structures. Spell ownership now reads catalog class metadata; configurable entity loadouts remain future work.
+5. **Opening/range heuristic cleanup — research pending after rollback:**
+   - [ ] Replace restored hardcoded opening spell/range presets and resource-based distance sampling while preserving useful behavior under the existing search budget.
+   - Spell ownership still reads catalog class metadata; configurable entity loadouts remain future work.
 
 Validate browser/GPU behavior as these changes land. Browser runtime parity is explicitly deprioritized by user request (2026-10-30). Signature abilities are the current priority, followed by aura/CC mechanics; retain browser verification as deferred work.
 

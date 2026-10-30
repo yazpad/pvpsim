@@ -182,3 +182,34 @@ Drain Life now draws a green channel with animated strands and life motes moving
 from victim to caster. It reads authoritative active cast and matching aura source
 IDs, uses displayed unit positions, and stops on observed interruption, expiration
 or death. It adds no simulation, readback or dispatch work. Host lifecycle tests pass.
+
+
+## Warrior expansion rollback and research archive (2026-10-30)
+
+At the user's request, production combat/planner/layout/UI source was restored to
+pre-expansion commit `8d58c1a`. Stances, Charge, Intercept, generic 0–72 yd range
+sampling and neutral opening plans are no longer active. Original opening spell
+seeds and class/resource range choices are restored as a known heuristic baseline.
+Entity state is 100 words, ArenaState is 2480 bytes, and SpellDef is 22 words with
+21 catalog entries. Search scheduling, estimator and budget are unchanged.
+
+The failed implementation, mechanics fixes, diagnostics and native Vulkan tests
+are preserved in [warrior-stance-experiment.patch](warrior-stance-experiment.patch).
+The patch is against `8d58c1a`; inspect/reproduce it in an isolated checkout of that
+commit rather than applying it directly over the current research notes. It also
+contains the experimental `tests/native-gpu.c`, `tests/warrior-native.mjs` and the
+`test:gpu-native` package script, which are not active in the restored baseline.
+
+The archived mechanics suite passed 39 prediction/live scenarios plus mutation
+through software Vulkan. However, battle-log(6) and battle-log(7) exposed poor
+combat strategy: large desired retreat distances, conflicting spell/range/stance
+plans, frequent stance switches and persistent low Rage. A failed-dash walking
+fix improved activation (Charge at 0.51s and Intercept at 4.11s in log(7)), but the
+Warrior then activated no further ability through the 32.4s export. Mechanical
+parity did not establish strategic quality. See TODO.md for the research checklist.
+
+Polymorph, Ice Barrier, Blink, Drain Life, the Drain Life channel beam, visible
+damage/healing values, log refresh at capacity, and corrected immune-CC reporting
+all predate the expansion and remain intact. Browser/GPU runtime verification is
+still deferred by user request; rollback checks cover host tests, production build
+and native WGSL validation/SPIR-V compilation.
