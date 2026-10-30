@@ -1,0 +1,112 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GPU pipeline diagnostic</title>
+<h1>GPU pipeline diagnostic</h1>
+<p id="previous"></p>
+<p>Each link compiles only the selected pipeline. Firefox may crash during compilation.</p>
+<nav id="pipelines"></nav>
+<label>Shader reduction:
+<select id="variant">
+<option value="original">Original</option>
+<option value="minimal">Minimal simulation body</option>
+<option value="nodecision">Remove decisions</option>
+<option value="nocast">Remove cast completion</option>
+<option value="nodot">Remove periodic damage</option>
+<option value="noswing">Remove auto attacks</option>
+<option value="queue">Stub event queue</option>
+<option value="auras">Stub aura helpers</option>
+<option value="cc">Stub crowd control</option>
+<option value="all">Stub all helpers</option>
+</select></label>
+<button id="run">Compile selected pipeline</button>
+<pre id="result"></pre>
+<script type="module">
+import { SIMULATION_WGSL } from '/src/shaders/sim.wgsl.ts';
+const entries = ['mutate_population','simulate_candidate','find_best_candidate','extract_elite_plan','prepare_search','advance_live'];
+const key = 'pvp-gpu-diagnostic-stage';
+document.querySelector('#previous').textContent = 'Last saved stage: ' + (localStorage.getItem(key) ?? 'none');
+const selected = new URLSearchParams(location.search).get('entry') ?? entries[0];
+for (const entry of entries) {
+ const link = document.createElement('a');
+ link.href = '?entry=' + entry;
+ link.textContent = entry + ' ';
+ document.querySelector('nav').append(link);
+}
+function replaceFunction(source, name, body) {
+ const start = source.indexOf('fn ' + name + '(');
+ if (start < 0) throw Error('Missing function ' + name);
+ const open = source.indexOf('{', start);
+ let depth = 1, end = open + 1;
+ while (depth && end < source.length) {
+   if (source[end] === '{') depth++;
+   if (source[end] === '}') depth--;
+   end++;
+ }
+ return source.slice(0, open + 1) + body + source.slice(end - 1);
+}
+function removeCase(source, number) {
+ const start = source.indexOf('case ' + number + 'u: {');
+ const open = source.indexOf('{', start);
+ let depth = 1, end = open + 1;
+ while (depth && end < source.length) {
+  if (source[end] === '{') depth++;
+  if (source[end] === '}') depth--;
+  end++;
+ }
+ return source.slice(0, open + 1) + source.slice(end - 1);
+}
+function reducedShader(variant) {
+ let source = SIMULATION_WGSL;
+ if (variant === 'minimal') return replaceFunction(source, 'simulate_candidate',
+   'if (id.x < simParams.y) { candidateFitness[id.x] = 1.0; }');
+ const cases = {nodecision: 5, nocast: 2, nodot: 3, noswing: 1};
+ if (variant in cases) return removeCase(source, cases[variant]);
+ // Diagnostic stubs isolate compilation only; these variants never run battles.
+ if (variant === 'queue' || variant === 'all') {
+  source = replaceFunction(source, 'enqueue', 'return;');
+  source = replaceFunction(source, 'dequeue', 'return Event(0u, 0u, 0u, 0u, 0u, 0u);');
+ }
+ if (variant === 'auras' || variant === 'all') {
+  source = replaceFunction(source, 'apply_aura', 'return;');
+  source = replaceFunction(source, 'absorb_damage', 'return raw_dmg;');
+  for (const name of ['get_healing_received_multiplier', 'get_damage_reduction_multiplier', 'get_speed_multiplier'])
+   source = replaceFunction(source, name, 'return 1.0;');
+ }
+ if (variant === 'cc' || variant === 'all') source = replaceFunction(source, 'apply_cc', 'return;');
+ return source;
+}
+const out = document.querySelector('pre');
+out.textContent = 'Selected: ' + selected;
+const runId = crypto.randomUUID();
+const report = async text => {
+ localStorage.setItem(key, text);
+ out.textContent += '\n' + text;
+ console.log(text);
+ const response = await fetch('/__gpu_diagnostic', {
+  method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({runId, entry: selected, stage: text, userAgent: navigator.userAgent}),
+ });
+ if (!response.ok) throw Error('Diagnostic logging unavailable. Restart npm run dev.');
+};
+const paint = () => new Promise(resolve => setTimeout(resolve, 200));
+document.querySelector('button').addEventListener('click', async event => {
+ event.target.disabled = true;
+ try {
+  if (!entries.includes(selected)) throw Error('Unknown pipeline');
+  await report('Requesting adapter'); await paint();
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw Error('No WebGPU adapter');
+  const device = await adapter.requestDevice();
+  device.addEventListener('uncapturederror', e => report(e.error.message));
+  const variant = document.querySelector('select').value;
+  await report('Parsing shader for ' + selected + ' variant=' + variant); await paint();
+  const module = device.createShaderModule({code: reducedShader(variant)});
+  const info = await module.getCompilationInfo();
+  for (const msg of info.messages) await report(`${msg.type} ${msg.lineNum}: ${msg.message}`);
+  if (info.messages.some(m => m.type === 'error')) throw Error('Shader compilation failed');
+  await report('Compiling ' + selected + ' variant=' + variant); await paint();
+  await device.createComputePipelineAsync({layout:'auto',compute:{module,entryPoint:selected}});
+  await report('PASS ' + selected + ' variant=' + variant);
+ } catch(e) { out.textContent += '\nFAIL ' + e.stack; await report('FAIL ' + e.stack); }
+});
+</script>

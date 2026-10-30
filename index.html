@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGPU N vs N RHEA Discrete Event Simulator</title>
+  <style>
+    :root {
+      --bg: #0f111a;
+      --card: #161926;
+      --border: #262a3d;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+      min-height: 100vh;
+    }
+
+    header {
+      width: 100%;
+      max-width: 1125px;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      margin-bottom: 6px;
+      background: linear-gradient(135deg, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    p.subtitle {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .dashboard {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      width: 100%;
+      max-width: 1125px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    }
+
+    .control-bar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 10px 18px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+
+    button.secondary {
+      background: #27273a;
+      color: #e2e8f0;
+    }
+
+    button.secondary:hover {
+      background: #35354e;
+    }
+
+    button.active {
+      background: #ef4444;
+    }
+
+    .telemetry {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px;
+      background: #0d0f17;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .telemetry-status {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    #statusLabel {
+      flex: 1;
+      min-width: 0;
+      height: 36px;
+      line-height: 18px;
+      overflow: auto;
+      overflow-wrap: anywhere;
+    }
+
+    #matchTimeLabel { flex: none; color: #e2e8f0; }
+
+    .telemetry-card {
+      min-width: 0;
+      padding: 10px 12px;
+      background: #151927;
+      border: 1px solid #252b40;
+      border-radius: 7px;
+    }
+
+    .telemetry-heading {
+      display: block;
+      margin-bottom: 6px;
+      color: #a5b4fc;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .telemetry-value {
+      display: block;
+      height: 60px;
+      line-height: 20px;
+      white-space: pre;
+      overflow: auto;
+      color: #e2e8f0;
+    }
+
+    @media (max-width: 680px) {
+      .telemetry { grid-template-columns: minmax(0, 1fr); }
+      .telemetry-status { gap: 8px; }
+    }
+
+    #arenaCanvas {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 860 / 420;
+      display: block;
+      background: #0a0b10;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .unit-effects {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-height: 22px;
+    }
+
+    .effect-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 5px;
+      border: 1px solid var(--effect-color);
+      border-radius: 4px;
+      background: #101420;
+      color: var(--effect-color);
+      font-size: 10px;
+      line-height: 14px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .effect-badge b { font-weight: 500; color: #f1f5f9; }
+
+    .spell-tooltip {
+      position: fixed;
+      z-index: 1000;
+      width: 280px;
+      max-width: calc(100vw - 16px);
+      padding: 12px 14px;
+      border: 1px solid #6473a2;
+      border-radius: 8px;
+      background: #151a2b;
+      box-shadow: 0 8px 28px #0009;
+      pointer-events: none;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #cbd5e1;
+    }
+    .spell-tooltip strong { display: block; color: #fff; font-size: 14px; margin-bottom: 4px; }
+    .spell-tooltip span, .spell-tooltip small { display: block; }
+    .spell-tooltip-status { color: #a5b4fc; margin-bottom: 5px; font-variant-numeric: tabular-nums; }
+    .spell-tooltip small { color: #94a3b8; margin-top: 7px; }
+
+    .unit-abilities {
+      display: flex;
+      gap: 6px;
+      padding-top: 8px;
+      margin-top: 2px;
+      border-top: 1px solid var(--border);
+    }
+
+    .ability-slot {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      flex: none;
+      overflow: hidden;
+      border: 1px solid #52647d;
+      border-radius: 5px;
+      background: #0d0f17;
+    }
+
+    .ability-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .ability-slot.on-cooldown { border-color: #394258; }
+    .ability-slot.inactive { opacity: 0.4; }
+    .ability-slot:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+    .cooldown-sweep { position: absolute; inset: 0; }
+    .cooldown-time {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 11px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 1px 3px black, 0 0 3px black;
+    }
+
+    @media (max-width: 900px) {
+      .unit-frames-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    }
+
+    @media (max-width: 480px) {
+      body { padding: 12px; }
+      .dashboard { padding: 12px; }
+      .unit-frames-grid { grid-template-columns: minmax(0, 1fr) !important; }
+    }
+
+    /* Unit Frames Grid */
+    .unit-frames-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      width: 100%;
+    }
+
+    .unit-frame-card {
+      background: #12141f;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      display: grid;
+      grid-template-rows: 40px 8px 5px 50px 22px 43px 18px 40px;
+      align-content: start;
+      height: 300px;
+      min-width: 0;
+      gap: 6px;
+      position: relative;
+      cursor: pointer;
+      transition: border-color 0.2s, transform 0.15s;
+    }
+
+    .unit-frame-card > * { min-width: 0; }
+    .unit-effects { overflow: auto; align-content: start; }
+    .unit-aura-slot { overflow: auto; }
+    .unit-aura-slot .unit-auras-row { margin-top: 0 !important; }
+    .unit-aura-slot .unit-auras-row > div { flex-shrink: 0; }
+    .unit-frame-header { overflow: hidden; }
+    .unit-info-text { min-width: 0; }
+    .unit-name, .unit-class-sub {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .unit-meta-stats { gap: 6px; overflow: auto; }
+
+    .unit-frame-card:hover {
+      border-color: #6366f1;
+      transform: translateY(-2px);
+    }
+
+    .unit-frame-card.team-0 {
+      border-left: 4px solid #10b981;
+    }
+
+    .unit-frame-card.team-1 {
+      border-left: 4px solid #ef4444;
+    }
+
+    .unit-frame-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .unit-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      border: 1px solid #333;
+    }
+
+    .unit-info-text {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .unit-name {
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .unit-class-sub {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .bar-container {
+      width: 100%;
+      height: 8px;
+      background: #1e202f;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hp-bar-fill {
+      height: 100%;
+      background: #10b981;
+      transition: width 0.1s linear;
+    }
+
+    .team-1 .hp-bar-fill {
+      background: #ef4444;
+    }
+
+    .power-bar-fill {
+      height: 100%;
+      background: #3b82f6;
+    }
+
+    .power-rage {
+      background: #ef4444;
+    }
+
+    .unit-meta-stats {
+      font-size: 0.7rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* Modal */
+    .editor-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .editor-modal {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      width: 100%;
+      max-width: 440px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 15px 40px rgba(0,0,0,0.6);
+    }
+
+    .editor-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .editor-body {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .form-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .form-row label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .form-row input {
+      background: #0d0f17;
+      border: 1px solid var(--border);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+
+    .editor-footer {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+
+    /* Combat Log Panel */
+    .combat-log-container {
+      background: #0d0f17;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .combat-log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: #161926;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--muted);
+    }
+
+    .combat-log-header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .log-toggle-btn {
+      background: #27273a;
+      border: none;
+      color: #cbd5e1;
+      padding: 3px 8px;
+      font-size: 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .log-toggle-btn:hover {
+      background: #3b3b54;
+    }
+
+    .combat-log-list {
+      max-height: 160px;
+      overflow-y: auto;
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-size: 0.78rem;
+      line-height: 1.4;
+    }
+
+    .log-entry {
+      display: flex;
+      gap: 8px;
+      align-items: baseline;
+    }
+
+    .log-time {
+      color: #64748b;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    .log-text {
+      color: #cbd5e1;
+    }
+
+    .log-text .team-0-name {
+      color: #34d399;
+      font-weight: 600;
+    }
+
+    .log-text .team-1-name {
+      color: #f87171;
+      font-weight: 600;
+    }
+
+    .log-text .val-dmg {
+      color: #fbbf24;
+      font-weight: 600;
+    }
+
+    .log-text .val-heal {
+      color: #4ade80;
+      font-weight: 600;
+    }
+
+    .log-text .val-cc {
+      color: #c084fc;
+      font-weight: 600;
+    }
+
+    .log-text .val-death {
+      color: #ef4444;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>WebGPU N vs N RHEA Combat Simulator</h1>
+    <p class="subtitle">Unified entity discrete event simulation running completely on GPU compute</p>
+  </header>
+
+  <div class="dashboard">
+    <div class="control-bar">
+      <button id="searchActBtn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Search & Act (RHEA)
+      </button>
+      <button id="benchBtn" class="secondary" style="border: 1px solid #6366f1;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        Benchmark 200k (fastsim)
+      </button>
+      <button id="stepBtn" class="secondary">Step Frame (100ms)</button>
+      <label for="playbackSpeed" style="display:flex;align-items:center;gap:8px;color:#cbd5e1;">
+        Speed
+        <select id="playbackSpeed" style="background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:8px;">
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1× (real time)</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </label>
+      <label for="showPlan" style="display:flex;align-items:center;gap:6px;color:#cbd5e1;" title="Show each unit's next planned actions from the RHEA search">
+        <input type="checkbox" id="showPlan" /> Show AI plan
+      </label>
+      <button id="resetBtn" class="secondary">Reset Match</button>
+    </div>
+
+    <div class="telemetry" aria-label="Live diagnostics">
+      <div class="telemetry-status">
+        <span id="statusLabel" role="status">Initializing...</span>
+        <span id="matchTimeLabel">0.0s</span>
+      </div>
+      <div class="telemetry-card">
+        <span class="telemetry-heading">Search throughput</span>
+        <span id="throughputLabel" class="telemetry-value">0 rollouts/s
+Population 0 · Total 0
+Plan age 0.0s</span>
+      </div>
+      <div class="telemetry-card">
+        <span class="telemetry-heading">Elite fitness</span>
+        <span id="fitnessLabel" class="telemetry-value">T0  0
+T1  0</span>
+      </div>
+      <div class="telemetry-card" title="Last 20 completed searches. Changes compare spell, target and range at matching decisions. Kept means no mutant beat the baseline at the score resolution. Plan persistence does not prove strategic convergence.">
+        <span class="telemetry-heading">Plan stability</span>
+        <span id="stabilityLabel" class="telemetry-value">Waiting for search
+T0  —
+T1  —</span>
+      </div>
+    </div>
+
+    <!-- Interactive Unit Frames Row -->
+    <div class="unit-frames-grid" id="unitFramesContainer">
+      <!-- Dynamically populated unit frames -->
+    </div>
+
+    <!-- 2D Arena Canvas with Boundary Limits -->
+    <div class="canvas-wrapper">
+      <canvas id="arenaCanvas" width="1075" height="525"></canvas>
+    </div>
+
+    <!-- Live Match Combat Log -->
+    <div class="combat-log-container">
+      <div class="combat-log-header">
+        <div class="combat-log-header-left">
+          <span>Live Match Combat Log</span>
+          <span id="logCountBadge" style="color: #6366f1;">(0 events)</span>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button id="exportLogBtn" class="log-toggle-btn">Export battle log</button>
+          <button id="clearLogBtn" class="log-toggle-btn">Clear</button>
+          <button id="toggleLogBtn" class="log-toggle-btn">Collapse</button>
+        </div>
+      </div>
+      <div class="combat-log-list" id="combatLogList">
+        <div style="color: #64748b; font-style: italic;">Awaiting match action...</div>
+      </div>
+    </div>
+
+    <!-- Unit Editor Modal (Gear, Talents, Attributes) -->
+    <div class="editor-overlay" id="editorOverlay" style="display: none;">
+      <div class="editor-modal">
+        <div class="editor-header">
+          <h2 id="editorTitle">Edit Character</h2>
+          <button id="closeEditorBtn" class="secondary" style="padding: 4px 10px;">✕</button>
+        </div>
+        <div class="editor-body">
+          <div class="form-row">
+            <label>Max HP</label>
+            <input type="number" id="editHp" />
+          </div>
+          <div class="form-row">
+            <label>Attack Power</label>
+            <input type="number" id="editAp" />
+          </div>
+          <div class="form-row">
+            <label>Spell Power</label>
+            <input type="number" id="editSp" />
+          </div>
+          <div class="form-row">
+            <label>Armor</label>
+            <input type="number" id="editArmor" />
+          </div>
+          <div class="form-row">
+            <label>Weapon Swing Speed (sec)</label>
+            <input type="number" step="0.1" id="editSpeed" />
+          </div>
+          <div class="form-row">
+            <label>Gear Preset</label>
+            <input type="text" id="editGear" />
+          </div>
+        </div>
+        <div class="editor-footer">
+          <button id="saveEditorBtn">Apply Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
