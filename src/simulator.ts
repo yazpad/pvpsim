@@ -114,6 +114,8 @@ export class WebGPURHEASimulator {
   private committedOriginBuffer!: GPUBuffer;
   private searchOriginBuffer!: GPUBuffer;
   private searchSliceBuffer!: GPUBuffer;
+  public mageCandidateFitness: {frostbolt?: number; fireblast?: number; polymorph?: number} = {};
+
   private stagingBestResultBuffer!: GPUBuffer;
   private stagingBestPlanBuffer!: GPUBuffer;
   private stagingOriginBuffer!: GPUBuffer;
@@ -563,13 +565,13 @@ export class WebGPURHEASimulator {
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
-    // 5. Best Candidate Result Buffer: [best_idx, fixed_point_fitness, done, pad]
+    // 5. Best Candidate Result Buffer: [best_idx, fixed_point_fitness, done, pad, mage_spells...]
     this.bestResultBuffer = this.device.createBuffer({
-      size: 16,
+      size: 32,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
     });
     this.stagingBestResultBuffer = this.device.createBuffer({
-      size: 16,
+      size: 32,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
 
@@ -705,7 +707,7 @@ export class WebGPURHEASimulator {
       this.searchOriginBuffer, this.committedPlanBuffer, this.committedOriginBuffer];
     const layouts: [GPUComputePipeline, number[]][] = [
       [this.mutatePipeline, [0, 1, 2, 4, 5, 11]],
-      [this.simulatePipeline, [0, 1, 2, 3, 4, 5, 7, 9, 11]],
+      [this.simulatePipeline, [0, 1, 2, 3, 4, 5, 6, 7, 9, 11]],
       [this.advanceLivePipeline, [0, 1, 4, 7, 8, 9, 12]],
       [this.findBestPipeline, [3, 5, 6]],
       [this.extractElitePipeline, [1, 2, 4, 5, 6]],
@@ -787,7 +789,7 @@ export class WebGPURHEASimulator {
       this.device.queue.writeBuffer(this.simParamsBuffer, 0, new Uint32Array([
         Math.floor(Math.random() * 0xffffffff), population, HORIZON_LENGTH, 10000,
       ]));
-      this.device.queue.writeBuffer(this.bestResultBuffer, 0, new Uint32Array(4));
+      this.device.queue.writeBuffer(this.bestResultBuffer, 0, new Uint32Array(8));
       this.dispatch(encoder, this.prepareSearchPipeline);
     }
     const generation = this.search;
@@ -804,7 +806,7 @@ export class WebGPURHEASimulator {
       // Publication stays on the GPU; telemetry readback cannot delay it.
       encoder.copyBufferToBuffer(this.bestPlanBuffer, 0, this.committedPlanBuffer, 0, BEST_PLAN_BYTES);
       encoder.copyBufferToBuffer(this.searchOriginBuffer, 0, this.committedOriginBuffer, 0, 32);
-      encoder.copyBufferToBuffer(this.bestResultBuffer, 0, this.stagingBestResultBuffer, 0, 16);
+      encoder.copyBufferToBuffer(this.bestResultBuffer, 0, this.stagingBestResultBuffer, 0, 32);
       encoder.copyBufferToBuffer(this.bestPlanBuffer, 0, this.stagingBestPlanBuffer, 0, BEST_PLAN_BYTES);
       encoder.copyBufferToBuffer(this.searchOriginBuffer, 0, this.stagingOriginBuffer, 0, 32);
     }
@@ -847,6 +849,16 @@ export class WebGPURHEASimulator {
         this.bestFitnessScoreTeam0 = res[1] / 10 - 100000;
         this.bestFitnessScoreTeam1 = res[3] / 10 - 100000;
         this.bestFitnessScore = this.bestFitnessScoreTeam0;
+        const unpackSpellFit = (packed: number) => {
+          if (!packed) return undefined;
+          const quant = packed >>> 16;
+          return quant * 4 - 100000;
+        };
+        this.mageCandidateFitness = {
+          frostbolt: unpackSpellFit(res[4]),
+          fireblast: unpackSpellFit(res[5]),
+          polymorph: unpackSpellFit(res[6]),
+        };
         this.lastSearchMs = performance.now() - generation.started;
         const origin = new Uint32Array(snapshots[2]);
         const plan = new Uint32Array(snapshots[1]);

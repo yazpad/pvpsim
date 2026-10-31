@@ -45,6 +45,17 @@
    * **Impact**: Because effective damage and effective healing are *already* reflected in final $\text{HP}_{\text{ally}}$ and $\text{HP}_{\text{enemy}}$, rewarding raw heal/shield casts encouraged Priest candidates to spam PW:Shield and Flash Heal on full-HP targets for free fitness points.
    * **Resolution**: Track only *effective* damage dealt (and effective HP restored `new_hp - old_hp`, or pure outcome HP + effective damage dealt) and remove artificial credit for unabsorbed shield applications.
 
+6. **Reward Hacking: Cumulative Damage/Heal Farming & Polymorph Full-Heal Cycle (2026-10-30)**
+   * **Where**: `advance_combat` (`case 7u` Polymorph regeneration) & `simulate_candidate` in [`src/shaders/sim.wgsl.ts`](file:///home/aaron-ma/pvp_sim3/src/shaders/sim.wgsl.ts)
+   * **The Exploit / Shortcut**:
+     1. Cumulative `damage_team0` / `damage_team1` was weighted 1:1 alongside terminal HP (`team_hp * 2.0 + damage_team - enemy_hp * 2.0`), with **no explicit unit-kill (`alive`) or fast-victory (`remaining_sec`) reward**. If a focused target took 2,000 damage and was then healed back for 2,000 HP via Polymorph, the attacking team *retained* the $+2,000$ cumulative `damage_team` points and gained a fresh 2,000 HP pool to farm even more `damage_team` points, whereas killing the target capped any further damage farming!
+     2. In `case 7u` (Polymorph tick), the HP restored (`healed = max_hp - old_hp`) was credited positively (`damage_team += healed * time_weight`) to the **sheeped victim's team** (`src.team`) instead of penalizing the Polymorph caster's team—giving the sheeped team triple reward for getting damaged and sheeped, and failing to subtract the enemy heal from the Mage team's `damage_team` score.
+     3. In RHEA rollouts, Polymorph (cost 150 mana, 1.5s cast) on a focused target with incoming teammate DoTs/attacks frequently broke within `< 1000ms` (before the first heal tick), looking like a cheap interrupt with zero healing penalty in the rollout, or tied Frostbolt in terminal 2v1 victory fitness because there was no urgency reward (`remaining_sec`) for finishing the match faster.
+   * **Resolution**:
+     1. In `case 7u`, subtract `healed * time_weight` from the opposing (Polymorph-casting) team's `damage_team` accumulator rather than crediting the victim's team.
+     2. Scale down cumulative `damage_team` weight (`0.25`) so it acts only as a temporal tie-breaker rather than dominating terminal HP (`2.0 * hp`), preventing damage-then-heal farming loops from outscoring actual net HP reduction.
+     3. Add explicit pure-outcome kill (`alive_diff * 4000.0`) and fast-victory urgency (`2000.0 + remaining_sec * 500.0`) rewards in `simulate_candidate` so teams are strictly incentivized to finish off low-HP targets as fast as possible rather than elongating the match.
+
 ---
 
 ## 3. Combat Engine & Data-Model Shortcuts

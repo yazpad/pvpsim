@@ -130,6 +130,7 @@ document.getElementById('exportLogBtn')!.addEventListener('click', () => {
       searchThroughputPerMs: sim.searchThroughput, livePopulation: sim.adaptivePopulation(),
       planAgeMs: sim.submittedTimeMs - sim.planOriginMs},
     planStability: sim.planStability,
+    mageCandidateFitness: sim.mageCandidateFitness,
     gpuErrors: sim.gpuErrors,
   };
   const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
@@ -418,6 +419,16 @@ function renderUnitFrames() {
       }
     }
 
+    let candidateDebugHtml = '';
+    if (u.className === 'Mage' && sim.mageCandidateFitness) {
+      const fb = sim.mageCandidateFitness.frostbolt !== undefined ? sim.mageCandidateFitness.frostbolt.toFixed(0) : '—';
+      const fblast = sim.mageCandidateFitness.fireblast !== undefined ? sim.mageCandidateFitness.fireblast.toFixed(0) : '—';
+      const poly = sim.mageCandidateFitness.polymorph !== undefined ? sim.mageCandidateFitness.polymorph.toFixed(0) : '—';
+      candidateDebugHtml = `<div class="unit-meta-stats" style="color: #cbd5e1; font-size: 10px; margin-top: 2px;">
+        <span>Cands: FB: ${fb} | Blast: ${fblast} | Poly: ${poly}</span>
+      </div>`;
+    }
+
     card.innerHTML = `
       <div class="unit-frame-header">
         <img class="unit-icon" src="${u.icon}" alt="${u.name}" />
@@ -455,6 +466,7 @@ function renderUnitFrames() {
         <span>Tgt: ${targetEntity ? targetEntity.name : 'None'} (${targetDist}y)</span>
         <span>${rangeStr} | ${spellName}</span>
       </div>
+      ${candidateDebugHtml}
     `;
 
     unitFramesContainer.appendChild(card);

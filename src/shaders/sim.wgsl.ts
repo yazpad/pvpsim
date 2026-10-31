@@ -126,7 +126,7 @@ struct SimQueue {
 @group(0) @binding(3) var<storage, read_write> candidateFitness: array<f32>; // [POPULATION]
 @group(0) @binding(4) var<storage, read_write> bestPlan: array<u32>; // [6 * HORIZON] (0..2 for Team 0, 3..5 for Team 1)
 @group(0) @binding(5) var<uniform> simParams: vec4<u32>; // x: seed, y: population_size, z: horizon_length, w: max_sim_time_ms
-@group(0) @binding(6) var<storage, read_write> bestCandidateResult: array<atomic<u32>, 4>; // [0]: team0_best_idx, [1]: team0_max_fit, [2]: team1_best_idx, [3]: team1_max_fit
+@group(0) @binding(6) var<storage, read_write> bestCandidateResult: array<atomic<u32>, 8>; // [0]: team0_best_idx, [1]: team0_max_fit, [2]: team1_best_idx, [3]: team1_max_fit, [4]: mage_frostbolt_fit, [5]: mage_fireblast_fit, [6]: mage_polymorph_fit, [7]: mage_best_target_packed
 
 // The live queue is authoritative; rollouts clone it along with the arena.
 @group(0) @binding(7) var<storage, read_write> liveQueue: SimQueue;
@@ -1187,8 +1187,10 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                         state.entities[src].hp = state.entities[src].max_hp;
                         let healed = state.entities[src].hp - old_hp;
                         record_event(logging, state.now, src, src, ev.spell_id, 2u, healed);
-                        if (state.entities[src].team == 0u) { damage_team0 += healed * time_weight; }
-                        else { damage_team1 += healed * time_weight; }
+                        // Penalize the Polymorph caster's team (opposing src.team) for healing the enemy,
+                        // and never credit src.team with active healing reward for being sheeped.
+                        if (state.entities[src].team == 0u) { damage_team1 -= healed * time_weight; }
+                        else { damage_team0 -= healed * time_weight; }
                         state.entities[src].auras[a].next_tick_at = state.now + 1000u;
                         if (state.now + 1000u <= aura.expires_at) { enqueue(&queue, Event(state.now + 1000u, 7u, src, src, ev.spell_id, ev.generation)); }
                     }
@@ -1263,25 +1265,60 @@ fn simulate_candidate(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Objective Fitness Evaluation (Symmetric & Purely Outcome-Driven)
     // No artificial distance penalties or hardcoded positional shaping.
+    // Includes terminal HP, alive unit bonus (eliminating enemy units), and fast-win bonus
+    // so teams are strictly incentivized to secure kills quickly rather than farm damage/healing cycles.
     var team0_hp = 0.0;
     var team1_hp = 0.0;
+    var team0_alive = 0.0;
+    var team1_alive = 0.0;
     for (var u = 0u; u < num_units; u = u + 1u) {
-        if (state.entities[u].team == 0u) {
-            team0_hp += state.entities[u].hp;
-        } else {
-            team1_hp += state.entities[u].hp;
+        if (state.entities[u].max_hp > 0.0) {
+            if (state.entities[u].team == 0u) {
+                team0_hp += state.entities[u].hp;
+                if (state.entities[u].alive == 1u && state.entities[u].hp > 0.0) {
+                    team0_alive += 1.0;
+                }
+            } else {
+                team1_hp += state.entities[u].hp;
+                if (state.entities[u].alive == 1u && state.entities[u].hp > 0.0) {
+                    team1_alive += 1.0;
+                }
+            }
         }
     }
+
+    // Time-discounted urgency bonus when a team wipes out the opposition before rollout horizon end
+    let horizon_end = liveState.now + simParams.w;
+    let remaining_sec = f32(horizon_end - min(state.now, horizon_end)) * 0.001;
+    let win_urgency_t0 = select(0.0, 2000.0 + remaining_sec * 500.0, team0_alive > 0.0 && team1_alive == 0.0);
+    let win_urgency_t1 = select(0.0, 2000.0 + remaining_sec * 500.0, team1_alive > 0.0 && team0_alive == 0.0);
+    let alive_diff_t0 = (team0_alive - team1_alive) * 4000.0;
 
     // Team 0 Population optimizes Team 0's objective
     // Team 1 Population optimizes Team 1's objective
     var fitness = 0.0;
     if (cand_idx < half_pop) {
-        // Team 0 Fitness: preserve Team 0 HP, deal damage to Team 1, reduce Team 1 HP
-        fitness = (team0_hp * 2.0 + damage_team0) - (team1_hp * 2.0);
+        // Team 0 Fitness: preserve Team 0 HP & units, deal net time-weighted pressure, eliminate Team 1
+        fitness = (team0_hp * 2.0 + damage_team0 * 0.25 + alive_diff_t0 + win_urgency_t0) - (team1_hp * 2.0);
     } else {
-        // Team 1 Fitness: preserve Team 1 HP, deal damage to Team 0, reduce Team 0 HP
-        fitness = (team1_hp * 2.0 + damage_team1) - (team0_hp * 2.0);
+        // Team 1 Fitness: preserve Team 1 HP & units, deal net time-weighted pressure, eliminate Team 0
+        fitness = (team1_hp * 2.0 + damage_team1 * 0.25 - alive_diff_t0 + win_urgency_t1) - (team0_hp * 2.0);
+    }
+
+    // Track spell-specific fitness for Mage (unit 2) across Team 1 candidates
+    if (cand_idx >= half_pop && cand_idx < simParams.y && state.pad1 == 0u) {
+        let mage_gene = candidatePlans[(cand_idx * 6u + 2u) * simParams.z];
+        let mage_spell = mage_gene & 0xFFu;
+        let mage_tgt = (mage_gene >> 16u) & 0xFFFFu;
+        let quant_f = clamp(u32(max(0.0, fitness + 100000.0) * 0.25), 1u, 65535u);
+        let packed_spell = (quant_f << 16u) | (mage_tgt & 0xFFFFu);
+        if (mage_spell == 10u) {
+            atomicMax(&bestCandidateResult[4], packed_spell);
+        } else if (mage_spell == 11u) {
+            atomicMax(&bestCandidateResult[5], packed_spell);
+        } else if (mage_spell == 17u) {
+            atomicMax(&bestCandidateResult[6], packed_spell);
+        }
     }
 
     candidateFitness[cand_idx] = select(fitness, -999999.0, state.pad1 != 0u);

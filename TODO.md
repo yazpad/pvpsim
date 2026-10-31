@@ -131,10 +131,23 @@ Evidence: `src/main.ts` (unit frame and arena rendering, log export, playback); 
 - [ ] Research the failed Warrior experiment using logs (6)/(7) and the archived implementation; keep budget changes separate.
 - [x] Add animated Drain Life channel beam driven by cast/aura state; stop on cancellation, expiry or death.
 - [x] Stop reporting DR-immune CC attempts as successful CC and omit zero-damage spell events.
-- [ ] Investigate wasted Polymorph choices with candidate-score instrumentation. Battle log (5) shows attempts during DR immunity and effective casts broken by allied damage; no hardcoded Polymorph-selection rule exists. Current export lacks per-candidate reasoning/scores.
+- [x] Investigate wasted Polymorph choices with candidate-score instrumentation. Battle log (5) showed attempts during DR immunity and effective casts broken by allied damage. Added zero-overhead GPU diagnostic reduction tracking candidate fitness across Frostbolt, Fire Blast, and Polymorph, exposing them in live unit frames and exported battle logs.
+  - **Findings from battle-log(8) & Reward-Hacking Audit (2026-10-30)**:
+    1. **Identical Rollout Fitness & No Fast-Kill Urgency**: `frostbolt` and `polymorph` evaluated to the exact same maximum fitness (`12,328`). In a 2v1 (Mage + Warlock vs solo Warrior), the 10-second rollout reaches terminal victory regardless of whether the opener is Polymorph or Frostbolt because `simulate_candidate` had no reward for unit kills (`alive`) or finishing the match earlier (`remaining_sec`).
+    2. **Cumulative `damage_team` Farming & Miscredited Polymorph Heal (Reward Hacking)**: Because `damage_team` was added 1:1 on top of terminal HP (`team_hp * 2.0 + damage_team - enemy_hp * 2.0`), damaging a target for 2,000 HP and letting Polymorph heal it back for 2,000 HP allowed attackers to *keep* the $+2,000$ `damage_team` score and farm the regenerated HP pool again (whereas killing a target capped further damage farming). Furthermore, `case 7u` credited Polymorph's heal (`damage_team += healed * time_weight`) to the *victim's team* rather than subtracting it from the Polymorph caster's team.
+    3. **Atomic Tie-Breaking Favoring Candidate Index**: `find_best_candidate` uses `(65535u - best_i)` in `atomicMax` to break fitness ties, causing identical-scoring candidates to favor lower candidate indices or retained coordinate-ascent baselines rather than preferring pure damage over CC.
+    4. **Live vs Rollout Timing Mismatch**: At $t = 21.06\text{s}$, Mage cast Polymorph while Warlock cast Shadow Bolt ($22.41\text{s}$) and Death Coil ($22.46\text{s}$). The damage landed 100ms *before* Polymorph finished ($22.56\text{s}$), leaving the sheep unbroken at 2,416 HP and allowing the 1.0s tick to restore the Warrior back to 3,800 HP (+1,384 HP). In rollouts, earlier damage breaks or jitter often cancelled the heal tick before it occurred, masking the live risk.
+  - [x] **Fix fitness reward hacking in `src/shaders/sim.wgsl.ts` (2026-10-30)**: Penalize the Polymorph-casting team's `damage_team` on enemy Polymorph heal ticks (`case 7u`), scale down cumulative `damage_team` to `0.25` (temporal tie-breaker only), and add explicit unit-elimination (`alive_diff * 4000.0`) and fast-victory urgency (`2000.0 + remaining_sec * 500.0`) bonuses in `simulate_candidate` without changing Polymorph regeneration rate.
 - [ ] Opening/range heuristics are restored as part of the user-approved rollback; replacing them remains research work.
 
 ## 3. Recommended Next Work
+
+### High priority — deferred for today (user request, 2026-10-30)
+
+- [ ] **Polymorph selection still has issues.** Candidate instrumentation in battle-log(8) confirmed that Polymorph ties Frostbolt in terminal rollout fitness in 2v1 situations, and tie-breaking/desynchronized live damage allows healing resets. Potential solutions to research:
+  1. Add a slight bias in candidate evaluation or tie-breaking favoring direct damage over non-damaging CC when target is low/kill target or in asymmetric man-advantage.
+  2. Improve target mutation for CC abilities to actively sample off-targets rather than inheriting the active kill-focus target.
+  3. Penalize redundant CC on targets currently being bursted by teammates to avoid 100ms out-of-order heal resets.
 
 **Warrior expansion rolled back by user request (2026-10-30).** The restored
 pre-expansion baseline is active. Research the failed movement/stance/search
