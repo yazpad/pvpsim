@@ -22,9 +22,9 @@ run(naga, [join(root, 'sim.wgsl'), join(root, 'sim.spv')]);
 run('cc', ['-O2', '-Wall', '-Wextra', '-Werror', 'tests/native-gpu.c', '-lvulkan', '-o', join(root, 'runner')]);
 const O = C.ENTITY_FIELD_OFFSETS;
 const base = id => C.ARENA_HEADER_WORDS + id * C.ENTITY_WORDS;
-const setU = (s, id, key, value) => new Uint32Array(s)[base(id) + O.uint[key]] = value;
-const setF = (s, id, key, value) => new Float32Array(s)[base(id) + O.float[key]] = value;
-const getU = (s, id, key) => s[base(id) + O.uint[key]];
+const setU = (s, id, key, value) => { assert(key in O.uint, `Unknown uint field: ${key}`); new Uint32Array(s)[base(id) + O.uint[key]] = value; };
+const setF = (s, id, key, value) => { assert(key in O.float, `Unknown float field: ${key}`); new Float32Array(s)[base(id) + O.float[key]] = value; };
+const getU = (s, id, key) => { assert(key in O.uint, `Unknown uint field: ${key}`); return s[base(id) + O.uint[key]]; };
 function aura(state, slot, {spell = 17, type = 8, expires = 5000, tick = 1000, generation = 1, value = 0, source = 0} = {}) {
   const u = new Uint32Array(state), f = new Float32Array(state), b = base(0) + C.ENTITY_BASE_WORDS + slot * C.AURA_SLOT_WORDS;
   u[b] = spell; u[b + 1] = type | (generation << 8); u[b + 2] = expires;
@@ -49,8 +49,8 @@ function spellData() {
     const fields = [s.castTimeMs, s.cooldownMs, s.cost, s.powerType, s.rangeYards, s.baseDamageMin,
       s.baseDamageMax, s.scaling, s.isHeal, s.isDot, s.dotDurationMs, s.dotTickMs, s.dotDamagePerTick,
       s.ccType, s.ccDurationMs, s.auraType, s.selfHealRatio ?? 0, s.classId ?? 0, Number(s.selfOnly ?? false),
-      s.blinkDistance ?? 0, s.channelMs ?? 0, s.absorbBase ?? 0];
-    fields.forEach((v, k) => { ([2, 4, 5, 6, 7, 12, 16, 19, 21].includes(k) ? f : u)[i * C.SPELL_WORDS + k] = v; });
+      s.blinkDistance ?? 0, s.channelMs ?? 0, s.absorbBase ?? 0, s.minRangeYards ?? 0, Number(s.requiresOutOfCombat ?? false), s.powerGain ?? 0, s.dashSpeed ?? 0];
+    fields.forEach((v, k) => { ([2, 4, 5, 6, 7, 12, 16, 19, 21, 22, 24, 25].includes(k) ? f : u)[i * C.SPELL_WORDS + k] = v; });
   });
   return data;
 }
@@ -83,14 +83,15 @@ function fixture(name, {events, until = 2000, configure = () => {}, check}) {
   }
   fixtures.push({name, paths, check});
 }
-// Action targets must not redirect attack focus for utility or CC.
+// Idle and CC preserve attack focus; the baseline treats Blink as a hostile non-CC action.
 for (const spell of [0, 15, 16, 17, 19, 10]) {
   fixture(`attack focus after action ${spell}`, {until: 1, events: [decision(0)],
     configure: (state, plan) => {
-      setU(state, 0, 'target_id', 2);
+      setU(state, 0, 'targetId', 2);
+      new Uint32Array(state)[base(0) + 25] = C.SPELL_CATALOG[spell].classId;
       plan[0] = spell | (3 << 8) | (1 << 16);
     },
-    check: u => assert.equal(getU(u, 0, 'target_id'), spell === 10 ? 1 : 2),
+    check: u => assert.equal(getU(u, 0, 'targetId'), [10, 19].includes(spell) ? 1 : 2),
   });
 }
 for (const [name, at, expiry] of [['break before heal', 999, 5000], ['break exactly on heal', 1000, 5000], ['expired aura hit on stale heal', 1000, 100]]) {
@@ -152,6 +153,80 @@ fixture('same-timestamp scheduled decision can act after the damage break', {unt
   check: (u, f, q, events) => { near(f[base(0) + 4], 855); noPolyHeal(events); assert.equal(getU(u, 0, 'decisionCount'), 1); assert.equal(victimDecision(q), 1500); }});
 fixture('lethal CC-breaking damage never wakes a dead victim', {events: [decision(500), swing(1000)], configure: s => setF(s, 0, 'hp', 100),
   check: (u, f, q) => { assert.equal(getU(u, 0, 'alive'), 0); assert.equal(victimDecision(q), 5050); }});
+// Mobility regressions use the production shader, fixed plans and exact live/prediction parity.
+function mobility(s, plan, spell = 21, targetX = 40, range = 0) {
+  aura(s, 0, {expires: 0, tick: 0});
+  setF(s, 0, 'speed', 7); setF(s, 0, 'power', 20);
+  setF(s, 1, 'posX', targetX);
+  for (let h = 0; h < 8; h++) plan[h] = spell | (range << 8) | (1 << 16);
+}
+for (const spell of [21, 22]) {
+  fixture(`mobility ${spell} travels before impact`, {until: 200, events: [decision(0)],
+    configure: (s, p) => mobility(s, p, spell), check: (u, f, q, events) => {
+      near(f[base(0) + 18], 20 + 17 * 200 / 405);
+      near(f[base(0) + 6], spell === 21 ? 35 : 10);
+      near(f[base(1) + 4], 3800);
+      assert.equal(getU(u, 1, 'controlledStunEnd'), 0);
+      assert.equal(events.filter(e => e.kind === 6 && e.spell === spell).length, 1);
+    }});
+  fixture(`mobility ${spell} impact and cooldown`, {until: 500, events: [decision(0)],
+    configure: (s, p) => mobility(s, p, spell), check: (u, f, q, events) => {
+      near(f[base(0) + 18], 37); near(f[base(1) + 4], spell === 21 ? 3800 : 3735);
+      assert.equal(getU(u, 1, 'controlledStunEnd'), 405 + (spell === 21 ? 1000 : 3000));
+      assert.equal(getU(u, 0, spell === 21 ? 'extraCooldowns3' : 'extraCooldowns4'), spell === 21 ? 150 << 16 : 300);
+      assert.equal(events.find(e => e.kind === 4 && e.spell === spell).time, 405);
+    }});
+}
+for (const [label, targetX, range, configure, expectedX] of [
+  ['too far approaches', 46, 0, () => {}, 23.5],
+  ['too close approaches', 27, 0, () => {}, 23.5],
+  ['combat approaches', 40, 0, s => setU(s, 0, 'combatUntil', 5000), 23.5],
+  ['combat retreats', 40, 30, s => setU(s, 0, 'combatUntil', 5000), 16.5],
+  ['cooldown approaches', 40, 0, s => setU(s, 0, 'extraCooldowns3', 100 << 16), 23.5],
+  ['root holds', 40, 0, s => aura(s, 0, {type: 6, expires: 1000, tick: 0, value: 300}), 20],
+  ['stun holds', 40, 0, s => setU(s, 0, 'controlledStunEnd', 1000), 20],
+  ['GCD still walks', 40, 0, s => setU(s, 0, 'gcdEnd', 1000), 23.5],
+  ['pillar blocks transit', 40, 0, s => {const f = new Float32Array(s), b = C.ARENA_PILLARS_OFFSET_WORDS; f[b] = 30; f[b+1] = 20; f[b+2] = 2;}, 23.5],
+  ['swept radius blocks transit', 40, 0, s => {const f = new Float32Array(s), b = C.ARENA_PILLARS_OFFSET_WORDS; f[b] = 30; f[b+1] = 23; f[b+2] = 2;}, 23.5],
+]) {
+  fixture(`rejected Charge ${label}`, {until: 1, events: [decision(0)], configure: (s, p) => {mobility(s, p, 21, targetX, range); configure(s);},
+    check: (u, f, q, events) => {near(f[base(0)+18], expectedX); near(f[base(0)+6], 20);
+      assert(!events.some(e => e.spell === 21)); assert.equal(getU(u, 0, 'dashEnd'), 0); }});
+}
+fixture('unaffordable Intercept still walks', {until: 1, events: [decision(0)], configure: (s, p) => {mobility(s, p, 22); setF(s, 0, 'power', 9);},
+  check: (u, f, q, events) => {near(f[base(0)+18], 23.5); near(f[base(0)+6], 9); assert(!events.some(e => e.spell === 22));}});
+for (const targetX of [28, 45]) fixture(`Charge activates at starting range ${targetX - 20}`, {until: 600, events: [decision(0)], configure: (s, p) => mobility(s, p, 21, targetX),
+  check: (u, f, q, events) => {near(f[base(0)+18], targetX - 3); assert(events.some(e => e.kind === 6 && e.spell === 21));}});
+fixture('mobility recovers ordinary movement and later melee', {until: 4000, events: [decision(0)], configure: (s, p) => {mobility(s, p); setF(s, 0, 'power', 30); p[1] = 3 | (1 << 16); p[2] = 1 | (1 << 16);},
+  check: (u, f, q, events) => {assert(events.some(e => e.spell === 3 && e.kind === 1)); assert(events.some(e => e.spell === 1 && e.kind === 1)); assert.equal(getU(u, 0, 'decisionCount'), 3);}});
+fixture('repeated rejected Charge keeps walking until melee', {until: 2000, events: [decision(0)], configure: (s, p) => {mobility(s, p); setU(s, 0, 'combatUntil', 10000);},
+  check: (u, f, q, events) => {near(f[base(0)+18], 37.5); assert.equal(getU(u, 0, 'decisionCount'), 5); assert(!events.some(e => e.spell === 21));}});
+fixture('stun DR is independent of Fear DR', {until: 500, events: [decision(0)], configure: (s, p) => {mobility(s, p, 22); setU(s, 1, 'drStunCount', 3); setU(s, 1, 'drStunResetAt', 10000);},
+  check: u => {assert.equal(getU(u, 1, 'controlledStunEnd'), 3405); assert.equal(getU(u, 1, 'drStunCount'), 3);}});
+fixture('root during transit cancels impact', {until: 600, events: [decision(0), decision(200, 1)], configure: (s, p) => {
+  mobility(s, p); setF(s, 1, 'posX', 40); new Uint32Array(s)[base(1)+25] = 3; setU(s, 1, 'powerType', 0); setF(s, 1, 'power', 10000); setF(s, 1, 'maxPower', 10000);
+  // Frost Nova is in range of the moving warrior at t=200.
+  setF(s, 1, 'speed', 7); p[8] = 12;
+}, check: (u, f, q, events) => {assert.equal(getU(u, 0, 'dashEnd'), 0); assert(!events.some(e => e.spell === 21 && e.kind === 4));}});
+fixture('midflight snapshot completes identically', {until: 600, events: [[405, 8, 0, 1, 21, 0]], configure: (s, p) => {
+  mobility(s, p); const u = new Uint32Array(s); u[0] = 200; u[2] = 3;
+  setU(s, 0, 'dashStart', 0); setU(s, 0, 'dashEnd', 405);
+  setF(s, 0, 'dashOriginX', 20); setF(s, 0, 'dashOriginY', 20);
+  setF(s, 0, 'dashDestX', 37); setF(s, 0, 'dashDestY', 20);
+  setF(s, 0, 'posX', 20 + 17 * 200 / 405);
+}, check: (u, f, q, events) => {near(f[base(0)+18], 37); assert.equal(getU(u, 1, 'controlledStunEnd'), 1405);}});
+fixture('target Blink during transit avoids remote impact', {until: 600, events: [decision(0), decision(200, 1)], configure: (s, p) => {
+  mobility(s, p, 22); instantCaster(s, p, 19, 3); p[8] = 19 | (30 << 8);
+}, check: (u, f, q, events) => {near(f[base(0)+18], 37); near(f[base(1)+4], 3800); assert.equal(getU(u, 1, 'controlledStunEnd'), 200);
+  assert(!events.some(e => e.spell === 22 && (e.kind === 1 || e.kind === 4)));}});
+fixture('Intercept respects existing stun immunity but still moves and damages', {until: 600, events: [decision(0)], configure: (s, p) => {
+  mobility(s, p, 22); setU(s, 1, 'controlledStunCount', 3); setU(s, 1, 'controlledStunResetAt', 10000);
+}, check: (u, f, q, events) => {near(f[base(0)+18], 37); near(f[base(1)+4], 3735); assert.equal(getU(u, 1, 'controlledStunEnd'), 0);
+  assert(!events.some(e => e.spell === 22 && e.kind === 4));}});
+fixture('Blink escapes the new controlled stun', {until: 1, events: [decision(0)], configure: (s, p) => {
+  mobility(s, p, 19); new Uint32Array(s)[base(0)+25] = 3; setU(s, 0, 'powerType', 0); setF(s, 0, 'power', 1000); setF(s, 0, 'maxPower', 1000);
+  setU(s, 0, 'controlledStunEnd', 3000);
+}, check: (u, f, q, events) => {assert.equal(getU(u, 0, 'controlledStunEnd'), 0); assert(events.some(e => e.spell === 19 && e.kind === 6));}});
 writeFileSync(join(root, 'manifest'), manifest.join('\n'));
 run(join(root, 'runner'), [join(root, 'sim.spv'), join(root, 'manifest'), fixtures[0].paths[0]], {
   env: {...process.env, ...(process.env.VK_DRIVER_FILES ? {} : existsSync('/usr/share/vulkan/icd.d/lvp_icd.json') ? {VK_DRIVER_FILES: '/usr/share/vulkan/icd.d/lvp_icd.json'} : {})},
@@ -160,6 +235,7 @@ function read(path, binding) {
   const b = readFileSync(join(path, `out${binding}.bin`));
   return new Uint32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
 }
+const failures = [];
 for (const {name, paths, check} of fixtures) {
   const reference = read(paths[0], 10), state = read(paths[1], 1), queue = read(paths[1], 7), log = read(paths[1], 9), logF = new Float32Array(log.buffer);
   assert.equal(state[3], 0, `${name}: event budget exhausted`); assert.equal(queue[1], 0, `${name}: heap overflow`);
@@ -174,7 +250,8 @@ for (const {name, paths, check} of fixtures) {
     events.push({time: log[b], source: log[b + 1], target: log[b + 2], spell: log[b + 3], kind: log[b + 4], value: logF[b + 5]});
   }
   try { check(state, new Float32Array(state.buffer), queue, events); }
-  catch (error) { throw Error(`${name}: ${error.message}`, {cause: error}); }
+  catch (error) { failures.push(`${name}: ${error.message}`); continue; }
   console.log(`PASS ${name} (native GPU live/prediction parity)`);
 }
+assert.deepEqual(failures, [], 'Native fixture failures');
 console.log(`Native CC fixtures: ${fixtures.length}; artifacts: ${root}`);

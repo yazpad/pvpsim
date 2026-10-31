@@ -79,6 +79,17 @@ export interface EntityModel {
   extraCooldowns?: number;
   extraCooldowns2?: number;
   extraCooldowns3?: number;
+  extraCooldowns4?: number;
+  combatUntil?: number;
+  dashStart?: number;
+  dashEnd?: number;
+  dashOriginX?: number;
+  dashOriginY?: number;
+  dashDestX?: number;
+  dashDestY?: number;
+  controlledStunCount?: number;
+  controlledStunResetAt?: number;
+  controlledStunEnd?: number;
   polymorphDrCount?: number;
   polymorphDrResetAt?: number;
   horrorEnd?: number;
@@ -512,6 +523,10 @@ export class WebGPURHEASimulator {
       spellF32[o + 19] = s.blinkDistance ?? 0;
       spellU32[o + 20] = s.channelMs ?? 0;
       spellF32[o + 21] = s.absorbBase ?? 0;
+      spellF32[o + 22] = s.minRangeYards ?? 0;
+      spellU32[o + 23] = Number(s.requiresOutOfCombat ?? false);
+      spellF32[o + 24] = s.powerGain ?? 0;
+      spellF32[o + 25] = s.dashSpeed ?? 0;
     }
 
     this.spellCatalogBuffer = this.device.createBuffer({

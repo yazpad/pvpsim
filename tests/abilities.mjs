@@ -11,9 +11,9 @@ const {SPELL_CATALOG, MAX_SPELLS} = await load('src/constants.ts');
 const {unitCooldowns} = await load('src/cooldowns.ts');
 const {visibleEffects} = await load('src/effects.ts');
 assert.equal(SPELL_CATALOG.length, MAX_SPELLS);
-assert.equal(MAX_SPELLS, 21, 'Rolled-back Warrior abilities remain in the active catalog');
+assert.equal(MAX_SPELLS, 23);
 assert.deepEqual(SPELL_CATALOG.filter(s => s.classId === 1).map(s => s.name),
-  ['Mortal Strike', 'Rend', 'Hamstring', 'Shield Wall']);
+  ['Mortal Strike', 'Rend', 'Hamstring', 'Shield Wall', 'Charge', 'Intercept']);
 for (const name of ['Polymorph', 'Ice Barrier', 'Blink', 'Drain Life']) {
   assert(SPELL_CATALOG.some(s => s.name === name), `Rollback removed ${name}`);
 }
@@ -95,3 +95,10 @@ assert.deepEqual(beams.beams, [], 'Expired channel retained its beam');
 beams.reset();
 assert.deepEqual(beams.beams, []);
 console.log('PASS Drain Life beam source/target binding, interruption, death, expiry and reset');
+
+const warrior = {...unit, className: 'Warrior', extraCooldowns3: 151 << 16, extraCooldowns4: 301};
+assert.equal(unitCooldowns(warrior, 100).find(s => s.id === 21).remainingMs, 15000);
+assert.equal(unitCooldowns(warrior, 100).find(s => s.id === 22).remainingMs, 30000);
+assert.deepEqual(visibleEffects({...unit, controlledStunEnd: 1500}, 100).map(e => e.label), ['Feared', 'Stunned', 'Horrified']);
+for (const id of [21, 22]) assert(existsSync('public' + SPELL_CATALOG[id].icon));
+console.log('PASS mobility cooldown separation, icons and independent stun display');

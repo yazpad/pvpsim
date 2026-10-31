@@ -29,6 +29,10 @@ struct SpellDef {
     blink_distance: f32,
     channel_ms: u32,
     absorb_base: f32,
+    min_range_yards: f32,
+    requires_out_of_combat: u32,
+    power_gain: f32,
+    dash_speed: f32,
 };
 
 struct AuraSlot {
@@ -84,6 +88,17 @@ struct EntityState {
     extra_cooldowns3: u32,
     polymorph_dr_count: u32,
     polymorph_dr_reset_at: u32,
+    extra_cooldowns4: u32,
+    combat_until: u32,
+    dash_start: u32,
+    dash_end: u32,
+    dash_origin_x: f32,
+    dash_origin_y: f32,
+    dash_dest_x: f32,
+    dash_dest_y: f32,
+    controlled_stun_count: u32,
+    controlled_stun_reset_at: u32,
+    controlled_stun_end: u32,
     auras: array<AuraSlot, 8>,
 };
 
@@ -225,7 +240,8 @@ fn get_spell_cd_end(unit: EntityState, spell_id: u32) -> u32 {
     if (spell_id == 0u || spell_id >= arrayLength(&spellCatalog)) { return 0u; }
     if (spell_id >= 16u) {
         var packed = unit.extra_cooldowns;
-        if (spell_id >= 20u) { packed = unit.extra_cooldowns3; }
+        if (spell_id >= 22u) { packed = unit.extra_cooldowns4; }
+        else if (spell_id >= 20u) { packed = unit.extra_cooldowns3; }
         else if (spell_id >= 18u) { packed = unit.extra_cooldowns2; }
         return ((packed >> ((spell_id & 1u) * 16u)) & 0xFFFFu) * 100u;
     }
@@ -241,7 +257,8 @@ fn set_spell_cd_end(unit: ptr<function, EntityState>, spell_id: u32, cd_end_ms: 
         let shift = (spell_id & 1u) * 16u;
         let mask = ~(0xFFFFu << shift);
         let value = min(65535u, (cd_end_ms + 99u) / 100u) << shift;
-        if (spell_id >= 20u) { (*unit).extra_cooldowns3 = ((*unit).extra_cooldowns3 & mask) | value; }
+        if (spell_id >= 22u) { (*unit).extra_cooldowns4 = ((*unit).extra_cooldowns4 & mask) | value; }
+        else if (spell_id >= 20u) { (*unit).extra_cooldowns3 = ((*unit).extra_cooldowns3 & mask) | value; }
         else if (spell_id >= 18u) { (*unit).extra_cooldowns2 = ((*unit).extra_cooldowns2 & mask) | value; }
         else { (*unit).extra_cooldowns = ((*unit).extra_cooldowns & mask) | value; }
         return;
@@ -377,7 +394,17 @@ fn apply_cc(recipient: ptr<function, EntityState>, cc_type: u32, base_duration_m
             (*recipient).cast_end = now;
             (*recipient).cast_spell_id = 0u;
         }
-    } else if (cc_type == 1u || cc_type == 4u) { // Stun (1) or Fear (4) incapacitate with DR
+    } else if (cc_type == 1u) {
+        if (now >= (*recipient).controlled_stun_reset_at) { (*recipient).controlled_stun_count = 0u; }
+        if ((*recipient).controlled_stun_count < 3u) {
+            let duration = base_duration_ms >> (*recipient).controlled_stun_count;
+            (*recipient).controlled_stun_count += 1u;
+            (*recipient).controlled_stun_end = max((*recipient).controlled_stun_end, now + duration);
+            (*recipient).controlled_stun_reset_at = (*recipient).controlled_stun_end + 15000u;
+            (*recipient).cast_end = now;
+            (*recipient).cast_spell_id = 0u;
+        }
+    } else if (cc_type == 4u) { // Fear has its own diminishing returns.
         // Reset DR if reset window elapsed
         if (now >= (*recipient).dr_stun_reset_at) {
             (*recipient).dr_stun_count = 0u;
@@ -433,7 +460,8 @@ fn apply_cc(recipient: ptr<function, EntityState>, cc_type: u32, base_duration_m
         // Handled via aura_type == 6 (speed = 0)
         return true;
     }
-    return (*recipient).stun_end != before.stun_end ||
+    return (*recipient).controlled_stun_end != before.controlled_stun_end ||
+        (*recipient).stun_end != before.stun_end ||
         (*recipient).silence_end != before.silence_end ||
         (*recipient).horror_end != before.horror_end ||
         (*recipient).polymorph_dr_count != before.polymorph_dr_count;
@@ -477,7 +505,7 @@ fn break_cc_on_damage(recipient: ptr<function, EntityState>, dmg: f32, now: u32)
 }
 
 fn incapacitated_until(unit: EntityState) -> u32 {
-    var until = max(unit.stun_end, unit.horror_end);
+    var until = max(max(unit.stun_end, unit.horror_end), unit.controlled_stun_end);
     for (var i = 0u; i < 8u; i++) {
         if ((unit.auras[i].aura_type & 0xFFu) == 8u) { until = max(until, unit.auras[i].expires_at); }
     }
@@ -522,6 +550,43 @@ fn resolve_pillar_collision(pillars: array<ArenaPillar, 4>, x: f32, y: f32) -> v
         }
     }
     return vec2<f32>(px, py);
+}
+
+fn dash_path_clear(pillars: array<ArenaPillar, 4>, origin: vec2<f32>, destination: vec2<f32>) -> bool {
+    let segment = destination - origin;
+    let length_sq = max(dot(segment, segment), 0.0001);
+    if (any(destination < vec2<f32>(2.0)) || any(destination > vec2<f32>(58.0, 38.0))) { return false; }
+    for (var p = 0u; p < 4u; p++) {
+        if (pillars[p].r <= 0.0) { continue; }
+        let center = vec2<f32>(pillars[p].x, pillars[p].y);
+        let t = clamp(dot(center - origin, segment) / length_sq, 0.0, 1.0);
+        let distance_sq = dot(origin + segment * t - center, origin + segment * t - center);
+        let radius = pillars[p].r + 1.5;
+        if (distance_sq < radius * radius) { return false; }
+    }
+    return true;
+}
+
+// Only active dashes run this bounded update. pad0 bit 0 = initialized,
+// bits 1..6 = active dash entity mask; no extra per-dash event chain.
+fn update_dashes(state: ptr<function, ArenaState>, now: u32) {
+    if (((*state).pad0 >> 1u) == 0u) { return; }
+    for (var u = 0u; u < 6u; u++) {
+        if (((*state).pad0 & (2u << u)) == 0u) { continue; }
+        var unit = (*state).entities[u];
+        // State was advanced to the CC event before the effect was applied.
+        // Cancellation therefore holds the last authoritative position.
+        if (unit.alive == 0u || incapacitated_until(unit) > now || get_speed_multiplier(unit, now) == 0.0) {
+            unit.dash_end = 0u;
+            (*state).pad0 &= ~(2u << u);
+        } else {
+            let t = clamp(f32(now - min(now, unit.dash_start)) / f32(max(1u, unit.dash_end - unit.dash_start)), 0.0, 1.0);
+            unit.pos_x = mix(unit.dash_origin_x, unit.dash_dest_x, t);
+            unit.pos_y = mix(unit.dash_origin_y, unit.dash_dest_y, t);
+            if (now >= unit.dash_end) { (*state).pad0 &= ~(2u << u); }
+        }
+        (*state).entities[u] = unit;
+    }
 }
 
 // Forced movement is a CC mechanic, not planner behavior. No shared mutation RNG:
@@ -687,6 +752,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
         if (queue.size == 0u) { break; }
         if (queue.events[0].at > max_time_ms) { break; }
         let ev = dequeue(&queue);
+        update_dashes(&state, ev.at);
         state.now = ev.at;
         // Temporal discount factor (1.0 at t=start_now down to 0.70 at +10s) so RHEA prioritizes
         // immediate pressure and fast kills over delayed actions.
@@ -716,7 +782,9 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                     // Mana casters only have melee staff/fist attack at 5y dealing minimal physical damage
                     let range_limit = 5.0;
 
-                    if (dist <= range_limit) {
+                    if (dist <= range_limit && state.entities[src].dash_end <= state.now) {
+                        state.entities[src].combat_until = state.now + 5000u;
+                        state.entities[tgt].combat_until = state.now + 5000u;
                         var base_dmg = state.entities[src].attack_power * 0.35 + 40.0;
                         if (state.entities[src].power_type != 1u) {
                             base_dmg = 15.0; // Casters deal negligible 15 physical damage staff bonk
@@ -765,6 +833,12 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                     let in_los = tgt == src || has_line_of_sight(state.pillars, state.entities[src].pos_x, state.entities[src].pos_y, state.entities[tgt].pos_x, state.entities[tgt].pos_y);
 
                     if (state.entities[tgt].alive == 1u && state.entities[src].power >= spell.cost && in_range && in_los) {
+                        if (state.entities[src].team != state.entities[tgt].team) {
+                            state.entities[src].combat_until = state.now + 5000u;
+                            state.entities[tgt].combat_until = state.now + 5000u;
+                        } else if (state.entities[tgt].combat_until > state.now) {
+                            state.entities[src].combat_until = state.now + 5000u;
+                        }
                         state.entities[src].power -= spell.cost;
                         var cd_entity_cast = state.entities[src];
                         if (spell.cooldown_ms > 0u) {
@@ -881,6 +955,12 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                         }
                     }
                     if (active_slot < 8u) {
+                        if (state.entities[src].team != state.entities[tgt].team) {
+                            state.entities[src].combat_until = state.now + 5000u;
+                            state.entities[tgt].combat_until = state.now + 5000u;
+                        } else if (state.entities[tgt].combat_until > state.now) {
+                            state.entities[src].combat_until = state.now + 5000u;
+                        }
                         if (spell.is_heal == 1u && spell.aura_type != 3u) {
                             let heal_mult = get_healing_received_multiplier(state.entities[tgt], state.now);
                             let tick_heal = (spell.dot_dmg_per_tick + spell.scaling * state.entities[src].spell_power * 0.2) * heal_mult;
@@ -983,12 +1063,33 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
 
                     let is_stunned = state.now < incapacitated_until(state.entities[src]);
                     var may_cast = !is_stunned;
-                    if (spell_id > 0u && spellCatalog[spell_id].blink_distance > 0.0 && state.entities[src].incapacitate_type == 1u) {
-                        var unstunned = state.entities[src]; unstunned.stun_end = state.now;
+                    if (spell_id > 0u && spellCatalog[spell_id].blink_distance > 0.0) {
+                        var unstunned = state.entities[src]; unstunned.controlled_stun_end = state.now;
+                        if (unstunned.incapacitate_type == 1u) { unstunned.stun_end = state.now; }
                         may_cast = incapacitated_until(unstunned) <= state.now;
                     }
                     let is_silenced = state.now < state.entities[src].silence_end;
-                    let is_casting = state.entities[src].cast_spell_id > 0u && state.entities[src].cast_end > state.now;
+                    let is_casting = state.entities[src].cast_end > state.now || state.entities[src].dash_end > state.now;
+
+                    let action_ready = spell_id > 0u && is_spell_valid(state.entities[src], spell_id) && !is_casting && may_cast && (!is_silenced || spellCatalog[spell_id].power_type == 1u) && state.now >= state.entities[src].gcd_end && state.now >= get_spell_cd_end(state.entities[src], spell_id);
+                    let is_dash = spell_id > 0u && spellCatalog[spell_id].dash_speed > 0.0;
+                    var dash_ready = false;
+                    var dash_destination = vec2<f32>(0.0);
+                    // Validate a dash at the decision's starting position. Only a
+                    // successful activation replaces the independent range intent.
+                    // Walking must not turn a rejected dash into a valid cast in
+                    // this same decision by crossing its minimum/maximum range.
+                    if (is_dash && action_ready) {
+                        let spell = spellCatalog[spell_id];
+                        let origin = vec2<f32>(state.entities[src].pos_x, state.entities[src].pos_y);
+                        let recipient = vec2<f32>(state.entities[active_tgt].pos_x, state.entities[active_tgt].pos_y);
+                        let delta = recipient - origin;
+                        let dist = length(delta);
+                        if (active_tgt != src && state.entities[active_tgt].alive == 1u && dist >= spell.min_range_yards && dist <= spell.range_yards && (spell.requires_out_of_combat == 0u || state.entities[src].combat_until <= state.now) && get_speed_multiplier(state.entities[src], state.now) > 0.0) {
+                            dash_destination = recipient - delta / max(dist, 0.001) * 3.0;
+                            dash_ready = has_line_of_sight(state.pillars, origin.x, origin.y, recipient.x, recipient.y) && dash_path_clear(state.pillars, origin, dash_destination);
+                        }
+                    }
 
                     // Online Learned Spatial Intent Execution:
                     // Unit smoothly tracks desired engagement distance relative to its enemy target
@@ -1003,7 +1104,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                             }
                         }
                     }
-                    if (!is_stunned && !is_casting && move_ref_tgt < num_units && state.entities[move_ref_tgt].alive == 1u) {
+                    if (!is_stunned && !is_casting && !dash_ready && move_ref_tgt < num_units && state.entities[move_ref_tgt].alive == 1u) {
                         let dx = state.entities[move_ref_tgt].pos_x - state.entities[src].pos_x;
                         let dy = state.entities[move_ref_tgt].pos_y - state.entities[src].pos_y;
                         let dist = sqrt(dx * dx + dy * dy);
@@ -1034,7 +1135,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                         }
                     }
 
-                    if (spell_id > 0u && is_spell_valid(state.entities[src], spell_id) && may_cast && (!is_silenced || spellCatalog[spell_id].power_type == 1u) && state.now >= state.entities[src].gcd_end && state.now >= state.entities[src].cast_end && state.now >= get_spell_cd_end(state.entities[src], spell_id)) {
+                    if (action_ready && (!is_dash || dash_ready)) {
                         let spell = spellCatalog[spell_id];
                         let cost = spell.cost;
                         
@@ -1045,6 +1146,12 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                         let in_los = spell.blink_distance > 0.0 || active_tgt == src || has_line_of_sight(state.pillars, state.entities[src].pos_x, state.entities[src].pos_y, state.entities[active_tgt].pos_x, state.entities[active_tgt].pos_y);
 
                         if (state.entities[src].power >= cost && (active_tgt == src || dist <= spell.range_yards) && in_los) {
+                            if (state.entities[src].team != state.entities[active_tgt].team) {
+                                state.entities[src].combat_until = state.now + 5000u;
+                                state.entities[active_tgt].combat_until = state.now + 5000u;
+                            } else if (state.entities[active_tgt].combat_until > state.now) {
+                                state.entities[src].combat_until = state.now + 5000u;
+                            }
                             // Universal GCD: 1500ms
                             state.entities[src].gcd_end = state.now + 1500u;
 
@@ -1056,7 +1163,18 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                                 enqueue(&queue, Event(state.entities[src].cast_end, 2u, src, active_tgt, spell_id, 0u));
                             } else {
                                 // Instant cast execution: deduct cost and record per-spell cooldown immediately
-                                state.entities[src].power -= cost;
+                                state.entities[src].power = min(state.entities[src].max_power, state.entities[src].power - cost + spell.power_gain);
+                                if (spell.dash_speed > 0.0) {
+                                    state.entities[src].dash_start = state.now;
+                                    state.entities[src].dash_end = state.now + u32(ceil(max(0.0, dist - 3.0) / spell.dash_speed * 1000.0));
+                                    state.entities[src].dash_origin_x = state.entities[src].pos_x;
+                                    state.entities[src].dash_origin_y = state.entities[src].pos_y;
+                                    state.entities[src].dash_dest_x = dash_destination.x;
+                                    state.entities[src].dash_dest_y = dash_destination.y;
+                                    state.pad0 |= 2u << src;
+                                    enqueue(&queue, Event(state.entities[src].dash_end, 8u, src, active_tgt, spell_id, 0u));
+                                    record_event(logging, state.now, src, active_tgt, spell_id, 6u, 0.0);
+                                }
                                 if (spell.cooldown_ms > 0u) {
                                     var cd_entity_inst = state.entities[src];
                                     set_spell_cd_end(&cd_entity_inst, spell_id, state.now + spell.cooldown_ms);
@@ -1074,7 +1192,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                                     } else {
                                         damage_team1 += eff_heal * time_weight;
                                     }
-                                } else if (spell.is_heal == 0u) {
+                                } else if (spell.is_heal == 0u && !is_dash) {
                                     // Physical abilities (power_type == 1u) are mitigated by Armor; magic spells ignore physical Armor.
                                     let armor_mul = select(1.0, 1000.0 / (1000.0 + state.entities[active_tgt].armor), spell.power_type == 1u);
                                     let dmg_red = get_damage_reduction_multiplier(state.entities[active_tgt], state.now);
@@ -1152,6 +1270,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                                     for (var a = 0u; a < 8u; a++) {
                                         if ((mover.auras[a].aura_type & 0xFFu) == 6u) { mover.auras[a].expires_at = state.now; }
                                     }
+                                    mover.controlled_stun_end = state.now;
                                     if (mover.incapacitate_type == 1u) { mover.stun_end = state.now; }
                                     let length = max(0.001, dist);
                                     let direction = vec2<f32>(dx, dy) / length * select(1.0, -1.0, desired_range > dist);
@@ -1199,6 +1318,32 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                 }
             }
 
+            case 8u: { // Gap-closer arrival; cancelled transit has dash_end = 0.
+                let spell = spellCatalog[ev.spell_id];
+                let origin = vec2<f32>(state.entities[src].pos_x, state.entities[src].pos_y);
+                let recipient = vec2<f32>(state.entities[tgt].pos_x, state.entities[tgt].pos_y);
+                if (state.entities[src].dash_end == state.now && state.entities[tgt].alive == 1u &&
+                    incapacitated_until(state.entities[src]) <= state.now && get_speed_multiplier(state.entities[src], state.now) > 0.0 &&
+                    state.entities[src].team != state.entities[tgt].team && distance(origin, recipient) <= 5.0 &&
+                    has_line_of_sight(state.pillars, origin.x, origin.y, recipient.x, recipient.y)) {
+                    var victim = state.entities[tgt];
+                    let raw = spell.base_dmg_min * 1000.0 / (1000.0 + victim.armor) * get_damage_reduction_multiplier(victim, state.now);
+                    let damage = absorb_damage(&victim, raw, state.now);
+                    if (break_cc_on_damage(&victim, damage, state.now)) { shortened_cc_target = tgt; }
+                    victim.hp = max(0.0, victim.hp - damage);
+                    if (victim.hp <= 0.0) { victim.alive = 0u; }
+                    if (damage > 0.0) { record_event(logging, state.now, src, tgt, ev.spell_id, 1u, damage); }
+                    if (state.entities[src].team == 0u) { damage_team0 += damage * time_weight; }
+                    else { damage_team1 += damage * time_weight; }
+                    if (victim.alive == 1u && apply_cc(&victim, spell.cc_type, spell.cc_duration_ms, state.now)) {
+                        record_event(logging, state.now, src, tgt, ev.spell_id, 4u, 0.0);
+                    }
+                    victim.combat_until = state.now + 5000u;
+                    state.entities[tgt] = victim;
+                    state.entities[src].combat_until = state.now + 5000u;
+                }
+            }
+
             case 7u: { // Polymorph regeneration follows its own aura generation.
                 for (var a = 0u; a < 8u; a++) {
                     let aura = state.entities[src].auras[a];
@@ -1224,7 +1369,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                 if (state.entities[src].next_flee_at != state.now) { continue; }
                 state.entities[src].next_flee_at = 0u;
                 if (is_fleeing(state.entities[src], state.now)) {
-                    var hard_stun = state.entities[src].stun_end > state.now && state.entities[src].incapacitate_type == 1u;
+                    var hard_stun = state.entities[src].controlled_stun_end > state.now || (state.entities[src].stun_end > state.now && state.entities[src].incapacitate_type == 1u);
                     for (var a = 0u; a < 8u; a++) {
                         if ((state.entities[src].auras[a].aura_type & 0xFFu) == 8u && state.entities[src].auras[a].expires_at > state.now) { hard_stun = true; }
                     }
@@ -1249,6 +1394,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
             // Use the final state so remaining/new CC and GCDs still gate acting.
             resume_decision_after_cc_break(&queue, state.entities[shortened_cc_target], state.now);
         }
+        update_dashes(&state, state.now);
         for (var u = 0u; u < num_units; u++) {
             if (was_alive[u] == 1u && state.entities[u].alive == 0u) {
                 record_event(logging, state.now, src, u, ev.spell_id, 5u, 0.0);
@@ -1261,7 +1407,7 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
     var pending_due = false;
     if (queue.size > 0u) { pending_due = queue.events[0].at <= max_time_ms; }
     if (pending_due) { state.pad1 = 1u; }
-    else { state.now = max_time_ms; }
+    else { update_dashes(&state, max_time_ms); state.now = max_time_ms; }
     return CombatResult(state, queue, damage_team0, damage_team1);
 }
 

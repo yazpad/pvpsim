@@ -75,7 +75,16 @@ Evidence: `src/shaders/sim.wgsl.ts` (`simulate_candidate`, `mutate_population`, 
 
 Evidence: `src/shaders/sim.wgsl.ts` (`AuraSlot`, `apply_aura`, modifier helpers, `apply_cc`, event kind 3); `src/simulator.ts` (GPU state packing/decoding).
 
+### Warrior mobility restoration (2026-10-30)
+
+Charge and Intercept are restored within the existing stance-free planner. Failed
+activations preserve ordinary movement; timed transit and arrival effects share
+live/predicted execution. Stance search remains deferred. See
+[mechanics, validation and fidelity limits](docs/WARRIOR_MOBILITY.md).
+
 ### Warrior stance/mobility experiment — rolled back; research required (2026-10-30)
+
+The following records the earlier rollback; the mobility-only restoration above supersedes its catalog/layout status.
 
 User requested restoration of the pre-expansion baseline after battle-log(6) and
 battle-log(7) showed ineffective Warrior behavior. Active code is restored to
@@ -96,14 +105,14 @@ values, bounded log refresh, and CC reporting corrections are retained.
 - [ ] Follow-up Warrior candidates remain Pummel, Disarm, Berserker Rage and Execute. Existing Shield Wall tuning/equipment requirements and wider Classic fidelity need a separate audit.
 
 ### Spell catalog — expanded, with remaining abilities
-- [x] Warrior: Mortal Strike, Rend, Hamstring, Shield Wall. Stances, Charge and Intercept were rolled back; see the research item above.
+- [x] Warrior: Mortal Strike, Rend, Hamstring, Shield Wall, Charge and Intercept. Stances remain deferred; see the mobility restoration above.
 - [x] Priest: Flash Heal, Renew, Power Word: Shield, Shadow Word: Pain, Psychic Scream.
 - [x] Mage: Frostbolt, Fire Blast, Frost Nova.
 - [x] Warlock: Corruption, Shadow Bolt, Fear, Death Coil (damage, effective self-heal, independent 3s horror, 120s cooldown).
 - [x] Add Polymorph (independent DR, damage break, regeneration), Ice Barrier (self absorb), Blink (planned direction, root/stun escape, collision), and Drain Life (interruptible channel and effective leech). Browser verification deferred.
 - [ ] Implement AoE Psychic Scream/Frost Nova and complete existing spell mechanics using the aura/CC work above. Catalog presence does not establish full live/rollout parity.
 
-Evidence: `src/constants.ts` (`SPELL_CATALOG`, 21 entries including Idle).
+Evidence: `src/constants.ts` (`SPELL_CATALOG`, 23 entries including Idle).
 
 ### Arena and visualizer
 - [x] Continuous 2D desired-range movement (always referenced against enemy target so healers can kite while healing allies) and arena boundary clamps in both live stepping and rollouts.

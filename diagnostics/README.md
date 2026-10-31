@@ -254,3 +254,11 @@ CC shortening. State/buffer sizes, queue capacity, dispatch/readback count, sear
 budget, mutation and fitness formulas are unchanged. Correctly released units can
 now generate legitimate combat events previously suppressed by the bug; hardware
 throughput impact has not been measured. Browser execution remains deferred.
+
+
+## Mobility restoration (2026-10-30)
+
+Charge and Intercept are active again, without restoring the archived stance/range
+search. See [WARRIOR_MOBILITY.md](../docs/WARRIOR_MOBILITY.md) for the current layouts,
+mechanics, test command and remaining fidelity/runtime limits. Historical layout
+counts and rollback descriptions above describe their respective revisions.

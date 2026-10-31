@@ -75,8 +75,8 @@ async function run() {
     const b = i * SPELL_WORDS;
     const fields = [s.castTimeMs, s.cooldownMs, s.cost, s.powerType, s.rangeYards, s.baseDamageMin,
       s.baseDamageMax, s.scaling, s.isHeal, s.isDot, s.dotDurationMs, s.dotTickMs,
-      s.dotDamagePerTick, s.ccType, s.ccDurationMs, s.auraType, s.selfHealRatio ?? 0, s.classId ?? 0, s.selfOnly ? 1 : 0, s.blinkDistance ?? 0, s.channelMs ?? 0, s.absorbBase ?? 0];
-    fields.forEach((value, k) => { ([2, 4, 5, 6, 7, 12, 16, 19, 21].includes(k) ? sf : su)[b + k] = value; });
+      s.dotDamagePerTick, s.ccType, s.ccDurationMs, s.auraType, s.selfHealRatio ?? 0, s.classId ?? 0, s.selfOnly ? 1 : 0, s.blinkDistance ?? 0, s.channelMs ?? 0, s.absorbBase ?? 0, s.minRangeYards ?? 0, Number(s.requiresOutOfCombat ?? false), s.powerGain ?? 0, s.dashSpeed ?? 0];
+    fields.forEach((value, k) => { ([2, 4, 5, 6, 7, 12, 16, 19, 21, 22, 24, 25].includes(k) ? sf : su)[b + k] = value; });
   });
   device.queue.writeBuffer(buffers[0], 0, spellData);
   const bindings = [[0, 1, 4, 7, 8, 9, 12], [0, 1, 4, 7, 8, 9, 10]];

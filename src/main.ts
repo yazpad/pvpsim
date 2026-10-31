@@ -67,10 +67,10 @@ function updateSpellTooltip() {
   const effect = ({1: 'Healing received reduced', 2: 'Damage taken reduced', 3: 'Absorbs damage',
     4: 'Healing over time', 5: 'Movement slowed 50%', 6: 'Root: unable to move', 7: 'Damage over time', 8: 'Polymorph: damage breaks effect'} as Record<number, string>)[spell.auraType];
   const cc = ({1: 'Stun', 2: 'Silence', 3: 'Interrupt', 4: 'Fear', 5: 'Root', 6: 'Horror'} as Record<number, string>)[spell.ccType];
-  const details = [effect, spell.selfHealRatio ? `Heals caster for ${spell.selfHealRatio * 100}% of damage dealt` : '', cc ? `${cc} · up to ${spell.ccDurationMs / 1000}s` : ''].filter(Boolean).join(' · ');
+  const details = [effect, spell.requiresOutOfCombat ? 'Requires out of combat' : '', spell.powerGain ? `Generates ${spell.powerGain} rage` : '', spell.selfHealRatio ? `Heals caster for ${spell.selfHealRatio * 100}% of damage dealt` : '', cc ? `${cc} · up to ${spell.ccDurationMs / 1000}s` : ''].filter(Boolean).join(' · ');
   spellTooltip.innerHTML = `<strong>${spell.name}</strong>
     <span class="spell-tooltip-status">${status}</span>
-    <span>${spell.cost} ${({0: 'mana', 1: 'rage', 2: 'energy'} as Record<number, string>)[spell.powerType]} · ${spell.rangeYards} yd range</span>
+    <span>${spell.cost} ${({0: 'mana', 1: 'rage', 2: 'energy'} as Record<number, string>)[spell.powerType]} · ${spell.minRangeYards ? `${spell.minRangeYards}–` : ""}${spell.rangeYards} yd range</span>
     <span>${spell.channelMs ? `${spell.channelMs / 1000}s channel` : spell.castTimeMs ? `${spell.castTimeMs / 1000}s cast` : 'Instant'} · ${spell.cooldownMs ? `${spell.cooldownMs / 1000}s cooldown` : 'No individual cooldown'}</span>
     ${details ? `<span>${details}</span>` : ''}
     <small>${aura ? 'Active effect on this unit.' : 'Casting also requires resources, global cooldown, range and line of sight.'}</small>`;
@@ -660,12 +660,13 @@ function render() {
     let d = displayPos.get(u.id);
     const jump = d ? Math.hypot(u.posX - d.x, u.posY - d.y) : Infinity;
 
-    if (!d || jump > 10 || !isRunning) {
-      // First sight, teleport/reset, or paused/stepping: snap directly to authoritative state.
+    if (!d || jump > 10 || !isRunning || (u.dashEnd ?? 0) > sim.simTimeMs ||
+        ((u.dashEnd ?? 0) > 0 && sim.simTimeMs - u.dashEnd! < 100)) {
+      // Transit/arrival must follow GPU positions, not the walking plan. Also snap on reset or pause.
       d = { x: u.posX, y: u.posY };
     } else {
       const isAlive = u.alive === 1;
-      const isStunned = Math.max(u.stunEnd, u.horrorEnd ?? 0) > sim.simTimeMs || u.auras.some(a => a.auraType === 8 && a.expiresAt > sim.simTimeMs);
+      const isStunned = Math.max(u.stunEnd, u.horrorEnd ?? 0, u.controlledStunEnd ?? 0) > sim.simTimeMs || u.auras.some(a => a.auraType === 8 && a.expiresAt > sim.simTimeMs);
       const isCasting = u.castSpellId > 0 && u.castEnd > sim.simTimeMs;
 
       let speedMult = 1.0;

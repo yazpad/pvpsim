@@ -9,9 +9,8 @@ export interface VisibleEffect {
   kind: 'fear' | 'horror' | 'stun' | 'root' | 'slow' | 'silence' | 'polymorph';
 }
 
-// The current GPU shares one timer for stun/fear. Only name a specific type
-// when the catalog makes it unambiguous; never guess from combat-log timing.
-const incapacitateTypes = new Set(SPELL_CATALOG.filter(s => s.ccType === 1 || s.ccType === 4).map(s => s.ccType));
+// Legacy incapacitation uses stunEnd; new controlled stuns have an independent timer.
+const incapacitateTypes = new Set(SPELL_CATALOG.filter(s => s.ccType === 4).map(s => s.ccType));
 
 export function visibleEffects(unit: EntityModel, now: number): VisibleEffect[] {
   if (!unit.alive) return [];
@@ -22,6 +21,8 @@ export function visibleEffects(unit: EntityModel, now: number): VisibleEffect[] 
     effects.push({kind: fear ? 'fear' : 'stun', label: fear ? 'Feared' : stun ? 'Stunned' : 'Incapacitated',
       detail: fear ? 'Fleeing uncontrollably · unable to act' : 'Unable to move or act', color: fear ? '#c084fc' : '#fbbf24', expiresAt: unit.stunEnd});
   }
+  if ((unit.controlledStunEnd ?? 0) > now) effects.push({kind: 'stun', label: 'Stunned',
+    detail: 'Unable to move or act', color: '#fbbf24', expiresAt: unit.controlledStunEnd!});
   if ((unit.horrorEnd ?? 0) > now) effects.push({kind: 'horror', label: 'Horrified',
     detail: 'Death Coil · fleeing uncontrollably · unable to act', color: '#a3e635', expiresAt: unit.horrorEnd!});
   if (unit.silenceEnd > now) effects.push({kind: 'silence', label: 'Silenced',

@@ -27,13 +27,13 @@ export const DEFAULT_ARENA_PILLARS: ArenaPillar[] = [
 
 // Shared GPU/CPU memory layout constants for ArenaState & EntityState
 export const ARENA_HEADER_WORDS = 4;
-export const ENTITY_BASE_WORDS = 36;
+export const ENTITY_BASE_WORDS = 47;
 export const AURA_SLOT_WORDS = 8;
-export const ENTITY_WORDS = ENTITY_BASE_WORDS + MAX_AURAS * AURA_SLOT_WORDS; // 36 + 64 = 100 words
+export const ENTITY_WORDS = ENTITY_BASE_WORDS + MAX_AURAS * AURA_SLOT_WORDS;
 export const PILLAR_WORDS = 4; // x, y, r, pad
-export const ARENA_PILLARS_OFFSET_WORDS = ARENA_HEADER_WORDS + MAX_ENTITIES * ENTITY_WORDS; // 604
-export const ARENA_WORDS = ARENA_PILLARS_OFFSET_WORDS + MAX_PILLARS * PILLAR_WORDS; // 604 + 16 = 620 words
-export const ARENA_BYTES = ARENA_WORDS * 4; // 2480 bytes
+export const ARENA_PILLARS_OFFSET_WORDS = ARENA_HEADER_WORDS + MAX_ENTITIES * ENTITY_WORDS;
+export const ARENA_WORDS = ARENA_PILLARS_OFFSET_WORDS + MAX_PILLARS * PILLAR_WORDS;
+export const ARENA_BYTES = ARENA_WORDS * 4;
 export const SIM_QUEUE_WORDS = 2 + 40 * 6; // 242 words
 export const SIM_QUEUE_BYTES = SIM_QUEUE_WORDS * 4; // 968 bytes
 export const COMBAT_EVENTS_WORDS = 1 + 80 * 6; // 481 words
@@ -66,6 +66,13 @@ export const ENTITY_FIELD_OFFSETS = {
     extraCooldowns3: 33,
     polymorphDrCount: 34,
     polymorphDrResetAt: 35,
+    extraCooldowns4: 36,
+    combatUntil: 37,
+    dashStart: 38,
+    dashEnd: 39,
+    controlledStunCount: 44,
+    controlledStunResetAt: 45,
+    controlledStunEnd: 46,
   },
   float: {
     hp: 4,
@@ -79,6 +86,10 @@ export const ENTITY_FIELD_OFFSETS = {
     posX: 18,
     posY: 19,
     speed: 20,
+    dashOriginX: 40,
+    dashOriginY: 41,
+    dashDestX: 42,
+    dashDestY: 43,
   },
 } as const;
 
@@ -108,7 +119,7 @@ export interface CombatLogEntry {
   text: string;
 }
 
-export const MAX_SPELLS = 21;
+export const MAX_SPELLS = 23;
 
 export interface AuraDef {
   id: number;
@@ -148,6 +159,10 @@ export interface SpellDef {
   blinkDistance?: number;
   channelMs?: number;
   absorbBase?: number;
+  minRangeYards?: number;
+  requiresOutOfCombat?: boolean;
+  powerGain?: number;
+  dashSpeed?: number;
   selfHealRatio?: number; // fraction of damage dealt restored to caster
   auraType: number; // 0: None, 1: MortalWounds, 2: ShieldWall, 3: PWShield, 4: Renew, 5: Slow, 6: Root
 }
@@ -527,6 +542,21 @@ const spellDefinitions: SpellDef[] = [
     rangeYards: 30, baseDamageMin: 0, baseDamageMax: 0, scaling: 0.5,
     isHeal: 0, isDot: 1, dotDurationMs: 5000, dotTickMs: 1000, dotDamagePerTick: 71,
     ccType: 0, ccDurationMs: 0, auraType: 7, classId: 4, channelMs: 5000, selfHealRatio: 1,
+  },
+  {
+    id: 21, classId: 1, name: "Charge", icon: "/icons/ability_warrior_charge.png",
+    castTimeMs: 0, cooldownMs: 15000, cost: 0, powerType: POWER_TYPE_RAGE,
+    rangeYards: 25, minRangeYards: 8, baseDamageMin: 0, baseDamageMax: 0, scaling: 0,
+    isHeal: 0, isDot: 0, dotDurationMs: 0, dotTickMs: 0, dotDamagePerTick: 0,
+    ccType: 1, ccDurationMs: 1000, auraType: 0,
+    requiresOutOfCombat: true, powerGain: 15, dashSpeed: 42,
+  },
+  {
+    id: 22, classId: 1, name: "Intercept", icon: "/icons/ability_rogue_sprint.png",
+    castTimeMs: 0, cooldownMs: 30000, cost: 10, powerType: POWER_TYPE_RAGE,
+    rangeYards: 25, minRangeYards: 8, baseDamageMin: 65, baseDamageMax: 65, scaling: 0,
+    isHeal: 0, isDot: 0, dotDurationMs: 0, dotTickMs: 0, dotDamagePerTick: 0,
+    ccType: 1, ccDurationMs: 3000, auraType: 0, dashSpeed: 42,
   }
 ];
 
@@ -537,4 +567,4 @@ export const SPELL_CATALOG: SpellDef[] = spellDefinitions.map(spell => ({
   selfOnly: spell.selfOnly ?? spell.id === 4,
   absorbBase: spell.absorbBase ?? (spell.auraType === 3 ? 500 : 0),
 }));
-export const SPELL_WORDS = 22;
+export const SPELL_WORDS = 26;
