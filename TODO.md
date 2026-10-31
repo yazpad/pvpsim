@@ -144,6 +144,22 @@ Evidence: `src/main.ts` (unit frame and arena rendering, log export, playback); 
 
 ### High priority — deferred for today (user request, 2026-10-30)
 
+#### For Advanced Models Only (Deep RHEA / Engine Bugs Flagged 2026-10-30)
+- [ ] **Off-Target CC & Utility Spells Overwrite Primary `unit.target_id` (`src/shaders/sim.wgsl.ts` line 964)**:
+  - In `advance_combat` (`case 5u`), `if (!friendly_spell) { state.entities[src].target_id = chosen_target; }` executes for *all* non-healing actions, including off-target CC (`Polymorph`, `Fear`, `Death Coil`), self-targeted utility (`Blink`, `spell_id == 19`), and even `Idle / Wait` (`spell_id == 0`).
+  - Casting Polymorph on an off-target permanently switches `unit.target_id` to that sheeped target, causing subsequent auto-attack swings (`case 1u`, which reads `state.entities[src].target_id`) and default target mutations (`mutate_population` line 1444: `var chosen_target = unit.target_id;`) to focus and break the sheeped target.
+- [ ] **Coupled Tri-Gene Mutation Prevents Independent Target / Range Exploration (`src/shaders/sim.wgsl.ts` lines 1417–1483)**:
+  - `mutate_population` re-rolls `(spell_id, desired_range, target_id)` simultaneously whenever a gene mutates. It cannot mutate *only* `target_id` (e.g., shifting an existing `Polymorph` or `Fear` from the primary kill target to an off-target) or *only* `desired_range` without also randomizing the spell ID.
+- [ ] **16-Bit Quantized Fitness Clamping & `4.0`-Point Tie-Breaking Blindness (`src/shaders/sim.wgsl.ts` line 192)**:
+  - `find_best_candidate` packs fitness into 16 bits via `clamp(u32(max(0.0, best_f + 100000.0) * 0.25), 1u, 65535u)`.
+  - The `* 0.25` quantization truncates any fitness difference `< 4.0` points to the exact same integer, causing `atomicMax` to break ties purely by `65535u - best_i` (favoring index `0` / `half_pop`, the unmutated baseline). Shifting by `+100000.0` also wastes ~38% of the 16-bit dynamic range.
+- [ ] **Channeled Spell Recast Heap Saturation (`Drain Life`, `src/shaders/sim.wgsl.ts` lines 1118–1165)**:
+  - Recasting `Drain Life` (`spell_id == 20`) sets `expires_at = state.now` on the existing aura slot before calling `apply_aura`, which allocates a fresh periodic chain and enqueues a new `EV_DOT_TICK` (`kind = 3u`) without reusing the existing chain's schedule. Repeated channel recasts in random rollout mutations can accumulate stale tick events in the 40-event `SimQueue`, triggering `queue.overflow = 1u` (`state.pad1 = 1u`) and rejecting the candidate (`-999999.0` fitness).
+- [x] **Adaptive Population Estimator Permanently Stuck at `1,024` Candidates (`src/simulator.ts` lines 135–145, 820–841)**:
+  - With `maxSearchInFlight = 1`, every completed search slice decrements `this.searchInFlight` to `0` in `.finally()`, which executes `if (this.searchInFlight === 0) { this.throughputWindowStart = 0; this.throughputWindowCount = 0; }`.
+  - Because a single 2,048-candidate slice completes in `< 15 ms`, the 250 ms measurement window (`if (windowMs >= 250)`) is reset after every slice and *never* completes. `this.searchThroughput` remains `0`, locking `adaptivePopulation()` to `min = 1024` forever.
+  - Fixed: accumulate active queue time across serial batches, exclude idle gaps, and retain existing population caps. Fake-GPU regression covers 25 short batches; `npm test` and build pass. Hardware throughput remains unverified.
+
 - [ ] **Polymorph selection still has issues.** Candidate instrumentation in battle-log(8) confirmed that Polymorph ties Frostbolt in terminal rollout fitness in 2v1 situations, and tie-breaking/desynchronized live damage allows healing resets. Potential solutions to research:
   1. Add a slight bias in candidate evaluation or tie-breaking favoring direct damage over non-damaging CC when target is low/kill target or in asymmetric man-advantage.
   2. Improve target mutation for CC abilities to actively sample off-targets rather than inheriting the active kill-focus target.

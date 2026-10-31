@@ -131,7 +131,7 @@ export class WebGPURHEASimulator {
   public searchThroughput = 0; // candidates per wall-clock ms (EMA)
 
   // Population size whose generation completes within targetMs of wall time, so live
-  // plans stay fresh. Falls back to `max` until throughput has been measured.
+  // plans stay fresh. Falls back to `min` until throughput has been measured.
   public adaptivePopulation(targetMs = 600, min = 1024, max = POPULATION_SIZE): number {
     if (this.searchThroughput <= 0) return min;
     const n = Math.floor((this.searchThroughput * targetMs) / 64) * 64;
@@ -143,6 +143,7 @@ export class WebGPURHEASimulator {
   public maxSearchInFlight = 1;
   private searchInFlight = 0;
   private throughputWindowStart = 0;
+  private throughputWindowMs = 0;
   private throughputWindowCount = 0;
   private searchReading = false;
   private benchmarking = false;
@@ -811,6 +812,7 @@ export class WebGPURHEASimulator {
       encoder.copyBufferToBuffer(this.searchOriginBuffer, 0, this.stagingOriginBuffer, 0, 32);
     }
     this.device.queue.submit([encoder.finish()]);
+    if (this.searchInFlight === 0) this.throughputWindowStart = performance.now();
     this.searchInFlight++;
     const started = performance.now();
     this.track(this.device.queue.onSubmittedWorkDone().then(() => {
@@ -818,13 +820,14 @@ export class WebGPURHEASimulator {
       // With batches pipelined, per-batch latency includes queue wait, so measure
       // throughput as completed candidates over wall time across a ~250 ms window.
       const now = performance.now();
-      if (this.throughputWindowStart === 0) this.throughputWindowStart = now - Math.max(1, this.lastSearchSliceMs);
+      this.throughputWindowMs += now - this.throughputWindowStart;
+      this.throughputWindowStart = now;
       this.throughputWindowCount += count;
-      const windowMs = now - this.throughputWindowStart;
+      const windowMs = this.throughputWindowMs;
       if (windowMs >= 250) {
         const rate = this.throughputWindowCount / windowMs;
         this.searchThroughput = this.searchThroughput > 0 ? this.searchThroughput * 0.7 + rate * 0.3 : rate;
-        this.throughputWindowStart = now;
+        this.throughputWindowMs = 0;
         this.throughputWindowCount = 0;
       }
       this.lastSearchSliceMs = now - started;
@@ -836,8 +839,8 @@ export class WebGPURHEASimulator {
       }
     }).catch(error => this.fail(error, generation.epoch)).finally(() => {
       this.searchInFlight = Math.max(0, this.searchInFlight - 1);
-      // Idle gap (nothing queued): restart the window so it doesn't count idle time.
-      if (this.searchInFlight === 0) { this.throughputWindowStart = 0; this.throughputWindowCount = 0; }
+      // Retain accumulated samples across serial batches; the next submission
+      // starts a new active interval, excluding idle time without losing samples.
     }));
     if (complete) {
       this.search = null;

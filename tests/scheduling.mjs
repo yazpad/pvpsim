@@ -130,3 +130,22 @@ assert.equal(sim.totalSimulationsRun - runBefore, 8192);
 assert.equal(sim.isPlanning, false);
 console.log('PASS pipelined search batches');
 console.log('PASS live stepping during delayed search/readback, snapshot isolation, complete-population publication, bounded readbacks, out-of-order snapshots, reset cancellation, and event-ring deduplication');
+// Serial short batches must accumulate an active-time measurement window.
+const realPerformance = globalThis.performance;
+let clock = 1000;
+globalThis.performance = {now: () => clock};
+try {
+  const serialGpu = new FakeGPU(), serial = new WebGPURHEASimulator();
+  serial.device = serialGpu;
+  serial.initDefaultEntities(); serial.createBuffers(); await serial.createPipelines();
+  for (let i = 0; i < 25; i++) {
+    assert(serial.stepRHEAAsync(32768));
+    clock += 10;
+    await serialGpu.flush();
+    clock += 1000; // Idle time must not depress GPU throughput.
+  }
+  assert.equal(serial.searchThroughput, 204.8);
+  assert(serial.adaptivePopulation() > 1024, 'Serial batches never learned throughput');
+  assert.equal(serial.adaptivePopulation(), 32768, 'Population exceeded its existing cap');
+} finally { globalThis.performance = realPerformance; }
+console.log('PASS serial throughput accumulation and idle-gap exclusion');
