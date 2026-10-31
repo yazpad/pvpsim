@@ -83,6 +83,16 @@ function fixture(name, {events, until = 2000, configure = () => {}, check}) {
   }
   fixtures.push({name, paths, check});
 }
+// Action targets must not redirect attack focus for utility or CC.
+for (const spell of [0, 15, 16, 17, 19, 10]) {
+  fixture(`attack focus after action ${spell}`, {until: 1, events: [decision(0)],
+    configure: (state, plan) => {
+      setU(state, 0, 'target_id', 2);
+      plan[0] = spell | (3 << 8) | (1 << 16);
+    },
+    check: u => assert.equal(getU(u, 0, 'target_id'), spell === 10 ? 1 : 2),
+  });
+}
 for (const [name, at, expiry] of [['break before heal', 999, 5000], ['break exactly on heal', 1000, 5000], ['expired aura hit on stale heal', 1000, 100]]) {
   fixture(name, {until: 1000, events: [swing(at), heal(1000)], configure: s => aura(s, 0, {expires: expiry}),
     check: (u, f, q, events) => { near(f[base(0) + 4], 855); noPolyHeal(events);

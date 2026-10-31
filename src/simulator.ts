@@ -711,7 +711,7 @@ export class WebGPURHEASimulator {
       [this.simulatePipeline, [0, 1, 2, 3, 4, 5, 6, 7, 9, 11]],
       [this.advanceLivePipeline, [0, 1, 4, 7, 8, 9, 12]],
       [this.findBestPipeline, [3, 5, 6]],
-      [this.extractElitePipeline, [1, 2, 4, 5, 6]],
+      [this.extractElitePipeline, [1, 2, 3, 4, 5, 6]],
       [this.prepareSearchPipeline, [1, 4, 12, 13, 14]],
     ];
     for (const [pipeline, bindings] of layouts) {

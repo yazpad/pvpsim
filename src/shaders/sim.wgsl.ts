@@ -183,19 +183,22 @@ fn find_best_candidate(@builtin(global_invocation_id) id: vec3<u32>, @builtin(lo
         workgroupBarrier();
     }
 
-    // Workgroup root updates global best atomically for respective team
-    // Pack quantized 16-bit fitness (bits 16..31) and 16-bit inverted candidate index (bits 0..15)
-    // so a single atomicMax updates both fitness and winning candidate index without race conditions.
+    // Publish index + 1 atomically; compare immutable full-f32 scores.
+    // Zero means no winner yet. CAS keeps score and index logically coupled.
     if (lane == 0u) {
         let best_f = wg_max_fitness[0];
         let best_i = wg_best_idx[0];
-        let quant_f = clamp(u32(max(0.0, best_f + 100000.0) * 0.25), 1u, 65535u);
-        let packed = (quant_f << 16u) | ((65535u - (best_i & 0xFFFFu)) & 0xFFFFu);
-        
-        if (best_i < half_pop) {
-            atomicMax(&bestCandidateResult[1], packed);
-        } else {
-            atomicMax(&bestCandidateResult[3], packed);
+        let slot = select(3u, 1u, best_i < half_pop);
+        var previous = atomicLoad(&bestCandidateResult[slot]);
+        loop {
+            if (previous > 0u) {
+                let previous_i = previous - 1u;
+                let previous_f = candidateFitness[previous_i];
+                if (previous_f > best_f || (previous_f == best_f && previous_i <= best_i)) { break; }
+            }
+            let result = atomicCompareExchangeWeak(&bestCandidateResult[slot], previous, best_i + 1u);
+            if (result.exchanged) { break; }
+            previous = result.old_value;
         }
     }
 }
@@ -961,7 +964,11 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                         }
                     }
 
-                    if (!friendly_spell) { state.entities[src].target_id = chosen_target; }
+                    // Utility and CC have an action target independent of attack focus.
+                    if (spell_id > 0u && !friendly_spell && spellCatalog[spell_id].self_only == 0u &&
+                        spellCatalog[spell_id].cc_type == 0u) {
+                        state.entities[src].target_id = chosen_target;
+                    }
                     let active_tgt = chosen_target;
                     decision_steps[src] = step + 1u;
                     state.entities[src].decision_count += 1u;
@@ -1119,9 +1126,24 @@ fn advance_combat(input_state: ArenaState, input_queue: SimQueue, plan: array<u3
                                     state.entities[src].cast_spell_id = spell_id;
                                     state.entities[src].cast_end = state.now + spell.channel_ms;
                                     record_event(logging, state.now, src, active_tgt, spell_id, 3u, 0.0);
-                                    for (var a = 0u; a < 8u; a++) {
-                                        if (state.entities[active_tgt].auras[a].spell_id == spell_id && state.entities[active_tgt].auras[a].source_id == src) {
-                                            state.entities[active_tgt].auras[a].expires_at = state.now;
+                                    // Restart the channel with exactly one tick chain, including
+                                    // when switching targets. Rebuild the heap without stale ticks.
+                                    var retained: SimQueue;
+                                    retained.size = 0u;
+                                    retained.overflow = queue.overflow;
+                                    for (var q = 0u; q < queue.size; q++) {
+                                        let pending = queue.events[q];
+                                        if (pending.kind != 3u || pending.source_id != src || pending.spell_id != spell_id) {
+                                            enqueue(&retained, pending);
+                                        }
+                                    }
+                                    queue = retained;
+                                    for (var target_idx = 0u; target_idx < num_units; target_idx++) {
+                                        for (var a = 0u; a < 8u; a++) {
+                                            if (state.entities[target_idx].auras[a].spell_id == spell_id && state.entities[target_idx].auras[a].source_id == src) {
+                                                state.entities[target_idx].auras[a].expires_at = state.now;
+                                                state.entities[target_idx].auras[a].next_tick_at = 0u;
+                                            }
                                         }
                                     }
                                 }
@@ -1417,10 +1439,14 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
             let mut_rate = select(0.30, 0.50, current_spell == 0u);
 
             if (rand_float(&rng) < mut_rate) {
-                // Pick random spell across 16 abilities; rejection sample up to 8 times to find a valid active spell.
+                // Explore single coordinates as well as joint changes.
+                let mutation_axis = xorshift32(&rng) % 4u;
+                var chosen_spell = current_spell;
+                if (mutation_axis == 0u || mutation_axis == 3u) {
+                // Pick random spell across the catalog; rejection sample up to 8 times to find a valid active spell.
                 // At h == 0, require current snapshot resource affordability AND off-cooldown; at future steps (h > 0),
                 // allow any class-owned spell so RHEA can plan spenders after future rage/mana generation and cooldown expiry.
-                var chosen_spell = 0u;
+                chosen_spell = 0u;
                 for (var trial = 0u; trial < 8u; trial = trial + 1u) {
                     // Bias slightly away from 0 (idle) during mutation so units actively test abilities
                     let cand_spell = (xorshift32(&rng) % (arrayLength(&spellCatalog) - 1u)) + 1u;
@@ -1442,8 +1468,11 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
                     }
                 }
 
+                }
+
                 // Emergent Target Search: pick any valid entity of matching relationship
-                var chosen_target = unit.target_id;
+                var chosen_target = (current_gene >> 16u) & 0xFFFFu;
+                if (mutation_axis == 1u || mutation_axis == 3u) {
                 let is_healing_spell = spellCatalog[chosen_spell].is_heal == 1u;
                 
                 // Sample random targets to find enemy for damage/movement or friendly for heal
@@ -1461,12 +1490,16 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
                     }
                 }
 
+                }
+
                 // Online Learned Spatial Intent Search:
                 // Mutates desired engagement distance:
                 // Melee units (rage users) desire 0y (point blank)
                 // Mana casters / healers search optimal combat spacing among [5y, 15y, 25y, 30y]
                 // so short-range CC (Psychic Scream 8y, Frost Nova 10y) and kiting can both emerge.
-                var chosen_range = 0u;
+                var chosen_range = (current_gene >> 8u) & 0xFFu;
+                if (mutation_axis == 2u || mutation_axis == 3u) {
+                chosen_range = 0u;
                 if (unit.power_type != 1u) {
                     let range_pick = xorshift32(&rng) % 4u;
                     if (range_pick == 0u) {
@@ -1480,6 +1513,8 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
                     }
                 }
 
+                }
+
                 // Pack tri-gene: bits 0..7 = spell_id, bits 8..15 = desired_range, bits 16..31 = target_id
                 candidatePlans[offset] = (chosen_spell & 0xFFu) | ((chosen_range & 0xFFu) << 8u) | ((chosen_target & 0xFFFFu) << 16u);
             } else {
@@ -1490,15 +1525,13 @@ fn mutate_population(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 // Compute Kernel: Extract Elite Candidate Plans into bestPlan buffer
-// Unpacks the atomicMax (fitness << 16 | inv_idx) into bestCandidateResult[0..3] and bestPlan
+// Decode winning indices; telemetry retains the existing tenths-point format.
 @compute @workgroup_size(1)
 fn extract_elite_plan(@builtin(global_invocation_id) id: vec3<u32>) {
-    let packed_t0 = atomicLoad(&bestCandidateResult[1]);
-    let packed_t1 = atomicLoad(&bestCandidateResult[3]);
-    let best_t0_idx = select(0u, 65535u - (packed_t0 & 0xFFFFu), packed_t0 > 0u);
-    let best_t1_idx = select(simParams.y / 2u, 65535u - (packed_t1 & 0xFFFFu), packed_t1 > 0u);
-    let fit_t0 = (packed_t0 >> 16u) * 40u;
-    let fit_t1 = (packed_t1 >> 16u) * 40u;
+    let best_t0_idx = atomicLoad(&bestCandidateResult[1]) - 1u;
+    let best_t1_idx = atomicLoad(&bestCandidateResult[3]) - 1u;
+    let fit_t0 = u32(max(1.0, (candidateFitness[best_t0_idx] + 100000.0) * 10.0));
+    let fit_t1 = u32(max(1.0, (candidateFitness[best_t1_idx] + 100000.0) * 10.0));
     atomicStore(&bestCandidateResult[0], best_t0_idx);
     atomicStore(&bestCandidateResult[1], fit_t0);
     atomicStore(&bestCandidateResult[2], best_t1_idx);

@@ -62,6 +62,7 @@ for (const [unit, spell, range] of [[0, 1, 0], [1, 5, 20], [2, 10, 30], [3, 13, 
   }
 }
 const binding = (pipeline, index) => sim.pipelineGroups.get(pipeline).entries.find(entry => entry.binding === index).resource.buffer;
+assert.equal(binding(sim.extractElitePipeline, 3), sim.candidateFitnessBuffer, 'Elite extraction needs full-precision candidate fitness');
 assert.notEqual(binding(sim.simulatePipeline, 1), binding(sim.advanceLivePipeline, 1), 'Search mutates the live arena');
 assert.notEqual(binding(sim.simulatePipeline, 7), binding(sim.advanceLivePipeline, 7), 'Search shares the live event heap');
 assert.notEqual(binding(sim.simulatePipeline, 4), binding(sim.advanceLivePipeline, 4), 'Search exposes unfinished plans to combat');
